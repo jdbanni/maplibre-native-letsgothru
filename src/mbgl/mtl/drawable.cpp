@@ -419,7 +419,7 @@ void Drawable::bindInstanceAttributes(RenderPass& renderPass) const {
     }
 }
 
-void Drawable::bindTextures(RenderPass& renderPass) const noexcept {
+void Drawable::bindTextures(RenderPass& renderPass) const {
     const bool isTerrain = (getName() == "terrain-tile");
 
 
@@ -459,7 +459,7 @@ void Drawable::unbindTextures(RenderPass& renderPass) const noexcept {
     }
 }
 
-void Drawable::uploadTextures(UploadPass&) const noexcept {
+void Drawable::uploadTextures(UploadPass&) const {
     const bool isTerrain = (getName() == "terrain-tile");
     if (isTerrain) {
         Log::Info(Event::Render, "Drawable::uploadTextures START");
