@@ -74,6 +74,8 @@ NativeMapView::NativeMapView(jni::JNIEnv& _env,
         return;
     }
 
+    mapRenderer.SetAsyncRendererCleanup(NativeMapOptions::asyncRendererCleanup(_env, jNativeMapOptions));
+
     // Create a renderer frontend
     rendererFrontend = AndroidRendererFrontend::create(_env, jMapRenderer);
 
@@ -1653,6 +1655,18 @@ void NativeMapView::onSpriteRequested(const std::optional<style::Sprite>& sprite
             weakReference.Call(
                 *_env, onSpriteRequested, jni::Make<jni::String>(*_env, ""), jni::Make<jni::String>(*_env, ""));
         }
+    }
+}
+
+void NativeMapView::onRenderError(std::exception_ptr) {
+    assert(vm != nullptr);
+
+    android::UniqueEnv _env = android::AttachEnv();
+    static auto& javaClass = jni::Class<NativeMapView>::Singleton(*_env);
+    static auto onRenderError = javaClass.GetMethod<void()>(*_env, "onRenderError");
+    auto weakReference = javaPeer.get(*_env);
+    if (weakReference) {
+        weakReference.Call(*_env, onRenderError);
     }
 }
 
