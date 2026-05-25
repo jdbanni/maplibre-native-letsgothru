@@ -222,6 +222,13 @@ private:
 public:
     std::unique_ptr<gfx::OffscreenTexture> createOffscreenTexture(Size, gfx::TextureChannelDataType) override;
 
+    /// letsgothru: GL backend currently ignores depth/stencil flags.
+    /// (RenderTarget at large doesn't need depth on GL paths today.)
+    std::unique_ptr<gfx::OffscreenTexture> createOffscreenTexture(Size size,
+                                                                  gfx::TextureChannelDataType type,
+                                                                  bool /*depth*/,
+                                                                  bool /*stencil*/) override;
+
 private:
     std::unique_ptr<gfx::RenderbufferResource> createRenderbufferResource(gfx::RenderbufferPixelType,
                                                                           Size size) override;

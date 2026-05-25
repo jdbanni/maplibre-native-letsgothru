@@ -19,14 +19,39 @@ RenderPass::RenderPass(CommandEncoder& commandEncoder_, const char* name, const 
 
     if (const auto& buffer = resource.getCommandBuffer()) {
         if (auto rpd = resource.getRenderPassDescriptor()) {
-            if (descriptor.clearColor) {
+            const bool wantsClearColor = descriptor.clearColor.has_value();
+            const bool wantsClearDepth = descriptor.clearDepth.has_value();
+            const bool wantsClearStencil = descriptor.clearStencil.has_value();
+            if (wantsClearColor || wantsClearDepth || wantsClearStencil) {
                 if (auto copy = NS::TransferPtr(rpd->copy())) {
-                    if (auto* colorTarget = copy->colorAttachments()->object(0)) {
-                        const auto& c = *descriptor.clearColor;
-                        colorTarget->setLoadAction(MTL::LoadActionClear);
-                        colorTarget->setClearColor(MTL::ClearColor::Make(c.r, c.g, c.b, c.a));
-                        rpd = std::move(copy);
+                    if (wantsClearColor) {
+                        if (auto* colorTarget = copy->colorAttachments()->object(0)) {
+                            const auto& c = *descriptor.clearColor;
+                            colorTarget->setLoadAction(MTL::LoadActionClear);
+                            colorTarget->setClearColor(MTL::ClearColor::Make(c.r, c.g, c.b, c.a));
+                        }
                     }
+                    // letsgothru terrain: propagate clearDepth/clearStencil to
+                    // the Metal descriptor so RTT FBOs that have depth/stencil
+                    // attachments start each frame cleared.
+                    if (wantsClearDepth) {
+                        if (auto* depthTarget = copy->depthAttachment()) {
+                            if (depthTarget->texture()) {
+                                depthTarget->setLoadAction(MTL::LoadActionClear);
+                                depthTarget->setClearDepth(*descriptor.clearDepth);
+                            }
+                        }
+                    }
+                    if (wantsClearStencil) {
+                        if (auto* stencilTarget = copy->stencilAttachment()) {
+                            if (stencilTarget->texture()) {
+                                stencilTarget->setLoadAction(MTL::LoadActionClear);
+                                stencilTarget->setClearStencil(
+                                    static_cast<uint32_t>(*descriptor.clearStencil));
+                            }
+                        }
+                    }
+                    rpd = std::move(copy);
                 }
             }
             encoder = NS::RetainPtr(buffer->renderCommandEncoder(rpd.get()));

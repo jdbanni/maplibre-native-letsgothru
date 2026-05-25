@@ -43,7 +43,10 @@ public:
     void reduceMemoryUsage() override;
 
     // Resource creation
-    std::unique_ptr<gfx::OffscreenTexture> createOffscreenTexture(Size, gfx::TextureChannelDataType, bool, bool);
+    std::unique_ptr<gfx::OffscreenTexture> createOffscreenTexture(Size,
+                                                                  gfx::TextureChannelDataType,
+                                                                  bool,
+                                                                  bool) override;
     std::unique_ptr<gfx::OffscreenTexture> createOffscreenTexture(Size, gfx::TextureChannelDataType) override;
     std::unique_ptr<gfx::CommandEncoder> createCommandEncoder() override;
     gfx::VertexAttributeArrayPtr createVertexAttributeArray() const override;

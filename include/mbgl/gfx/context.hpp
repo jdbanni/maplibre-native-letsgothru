@@ -83,6 +83,17 @@ public:
 
     virtual std::unique_ptr<OffscreenTexture> createOffscreenTexture(Size, TextureChannelDataType) = 0;
 
+    /// Create an offscreen texture with optional depth/stencil attachments.
+    /// Backends that support depth/stencil offscreen targets override this;
+    /// others fall back to the 2-arg version.
+    /// Added for letsgothru terrain: fill drawables with enableDepth=true must be
+    /// drawn into an FBO that has a depth attachment, otherwise Metal pipeline
+    /// validation silently drops them.
+    virtual std::unique_ptr<OffscreenTexture> createOffscreenTexture(Size size,
+                                                                     TextureChannelDataType type,
+                                                                     bool /*depth*/,
+                                                                     bool /*stencil*/) = 0;
+
     template <RenderbufferPixelType pixelType>
     Renderbuffer<pixelType> createRenderbuffer(const Size size) {
         return {size, createRenderbufferResource(pixelType, size)};

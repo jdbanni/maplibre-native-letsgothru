@@ -23,6 +23,18 @@ RenderTarget::RenderTarget(gfx::Context& context_,
       backgroundColor(backgroundColor_) {
     offscreenTexture = context.createOffscreenTexture(size, type);
 }
+RenderTarget::RenderTarget(gfx::Context& context_,
+                           const Size size,
+                           const gfx::TextureChannelDataType type,
+                           const Color& backgroundColor_,
+                           bool depthStencil)
+    : context(context_),
+      backgroundColor(backgroundColor_) {
+    // letsgothru terrain: request depth+stencil so fill/line drawables with
+    // enableDepth=true (or stencil clipping) don't get silently dropped by
+    // Metal pipeline validation when they're moved into RTT sub-groups.
+    offscreenTexture = context.createOffscreenTexture(size, type, depthStencil, depthStencil);
+}
 
 RenderTarget::~RenderTarget() {}
 
@@ -74,9 +86,17 @@ void RenderTarget::upload(gfx::UploadPass& uploadPass) {
 }
 
 void RenderTarget::render(RenderOrchestrator& orchestrator, const RenderTree& renderTree, PaintParameters& parameters) {
+    // letsgothru terrain: explicitly clear depth to 1.0 (far plane) and stencil to 0
+    // so fill drawables that use depth/stencil tests start each frame from a sane state.
+    // (The offscreen texture only actually has these attachments if it was created with
+    //  depthStencil=true via the 5-arg constructor; backends that ignore the flag will
+    //  see this as no-op.)
     parameters.renderPass = parameters.encoder->createRenderPass(
         "render target",
-        {.renderable = *offscreenTexture, .clearColor = backgroundColor, .clearDepth = {}, .clearStencil = {}});
+        {.renderable = *offscreenTexture,
+         .clearColor = backgroundColor,
+         .clearDepth = 1.0f,
+         .clearStencil = 0});
 
     const gfx::ScissorRect prevScissorRect = parameters.scissorRect;
     const auto& size = getTexture()->getSize();

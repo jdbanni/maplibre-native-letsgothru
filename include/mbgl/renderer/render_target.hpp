@@ -34,6 +34,14 @@ public:
                  const Size size,
                  const gfx::TextureChannelDataType type,
                  const Color& backgroundColor);
+    /// Construct a RenderTarget with explicit depth/stencil attachment control.
+    /// letsgothru: terrain RTT FBOs need depth so fill drawables with enableDepth=true
+    /// pass Metal pipeline validation.
+    RenderTarget(gfx::Context& context,
+                 const Size size,
+                 const gfx::TextureChannelDataType type,
+                 const Color& backgroundColor,
+                 bool depthStencil);
     ~RenderTarget();
 
     /// Get the render target texture

@@ -5,6 +5,83 @@ plus globe, ship a custom XCFramework + RN binding for letsgothru/apps/mobile.
 
 iOS is the primary target; macOS is for dev iteration only.
 
+## Phase 3 (2026-05-25) — Track A DONE
+
+Track A success criterion was "visible mountains" rendering Snowdonia
+outdoors.json + terrain at z>=11 pitch>=60°. Achieved on three fronts:
+
+- `RENDERED-task3a-mesh-2026-05-25.png` — terrain mesh only (no basemap,
+  forces elevation-gradient fallback in fragment shader). Snowdon massif
+  clearly visible in 3D.
+- `RENDERED-task3a-blended-2026-05-25.png` — full outdoors style with
+  elevation-shaded basemap fill. Shows the basemap fills are now correctly
+  drawing into the RTT FBO and being draped onto the elevated mesh.
+- `RENDERED-task3a-2026-05-25.png` — outdoors style with elevation
+  brightness shading. Subtler than the blended version because the
+  Snowdonia basemap is largely cream-coloured; the relief is visible at
+  the horizon but the in-image contrast is low.
+
+### Root cause (Task 3a)
+
+Two cooperating bugs:
+
+1. **`RenderTarget`'s offscreen texture had no depth/stencil attachment.**
+   Fill drawables are created with `enableDepth=true`. When moved into
+   the per-terrain-tile RTT sub-group, the cached Metal pipeline state
+   was rebuilt against the RTT's render-pass descriptor — and because
+   the RPD's depth attachment had no texture, the pipeline got
+   `setDepthAttachmentPixelFormat` *not* set. Metal validation then
+   silently drops draws that try to use a depth-stencil state against
+   a pipeline that has no matching attachment.
+
+2. **The fragment shader's `mapColor.a > 0.01` check short-circuited
+   to the elevation-fallback path whenever the RTT was near-empty.**
+   With the RTT now populated (post-fix 1), `mapColor.a > 0.01` is
+   true, but a fragment-only colour with no lighting plus a near-uniform
+   cream basemap looks visually flat. Added a soft elevation-based
+   brightness so the relief is at least subtly visible. A proper
+   hillshade (DEM-gradient + light direction) is a follow-up.
+
+### Files touched, Phase 3
+
+- `include/mbgl/gfx/context.hpp` — added pure-virtual
+  `createOffscreenTexture(size, type, depth, stencil)`. Default 2-arg
+  remains for backward compat.
+- `include/mbgl/mtl/context.hpp`, `include/mbgl/vulkan/context.hpp`,
+  `include/mbgl/webgpu/context.hpp` — marked existing 4-arg as `override`.
+- `src/mbgl/gl/context.hpp`/`context.cpp` — added 4-arg overload
+  forwarding to 2-arg (GL path is unused for terrain today).
+- `src/mbgl/mtl/render_pass.cpp` — propagate `clearDepth`/`clearStencil`
+  from the gfx::RenderPassDescriptor through to the MTL render-pass
+  descriptor's depth/stencil attachments.
+- `include/mbgl/renderer/render_target.hpp` /
+  `src/mbgl/renderer/render_target.cpp` — added 5-arg constructor
+  that takes a `bool depthStencil` flag and forwards to the 4-arg
+  `createOffscreenTexture`. `render()` now clears depth=1.0 stencil=0.
+- `src/mbgl/renderer/texture_pool.cpp` — terrain RTT creation now
+  uses the 5-arg `RenderTarget` constructor with depthStencil=true.
+- `include/mbgl/shaders/mtl/terrain.hpp` — fragment shader now passes
+  `elevationMeters` to fragment stage and brightens basemap fragments
+  by elevation. Vertex shader unchanged (still uses Terrarium decode +
+  tile-units exaggeration from Phase 2).
+
+### Why Track A is what matters
+
+Brief said: "Stop when Track A succeeds — that's the actual win for the
+project." Track B (macOS Cocoa client) and Track C (globe scoping) were
+explicitly de-prioritised. Track A done, moving to commit + push +
+report. Track B is unblocked for the next agent — instructions still
+in PROGRESS.md tail.
+
+### Build note for Phase 3
+
+Same as Phase 2: `/usr/bin/ar` chokes on the long argument list. Use
+`-DCMAKE_AR=/opt/homebrew/opt/llvm/bin/llvm-ar
+-DCMAKE_RANLIB=/opt/homebrew/opt/llvm/bin/llvm-ranlib` on a fresh
+`cmake --preset macos-metal` configure. Build is `cmake --build
+build-macos-metal --target mbgl-render -j8` and takes ~3-5 min from
+clean ccache.
+
 ## Phase 2 (2026-05-25) — Task 1 DONE, Task 2 partial
 
 ### Task 1 — stencil assert fixed

@@ -439,6 +439,15 @@ std::unique_ptr<gfx::OffscreenTexture> Context::createOffscreenTexture(const Siz
     return std::make_unique<gl::OffscreenTexture>(*this, size, type);
 }
 
+std::unique_ptr<gfx::OffscreenTexture> Context::createOffscreenTexture(const Size size,
+                                                                       const gfx::TextureChannelDataType type,
+                                                                       bool /*depth*/,
+                                                                       bool /*stencil*/) {
+    // letsgothru: GL OffscreenTexture path doesn't expose depth/stencil flags;
+    // fall back to the 2-arg form. Terrain compositing today is Metal-only.
+    return createOffscreenTexture(size, type);
+}
+
 std::unique_ptr<gfx::DrawScopeResource> Context::createDrawScopeResource() {
     MLN_TRACE_FUNC();
 

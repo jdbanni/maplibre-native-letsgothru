@@ -9,8 +9,16 @@ TexturePool::TexturePool(uint32_t tilesize)
 TexturePool::~TexturePool() {}
 
 void TexturePool::createRenderTarget(gfx::Context& context, const UnwrappedTileID& id, const Color& backgroundColor) {
-    renderTargets[id] = context.createRenderTarget(
-        {tileSize, tileSize}, gfx::TextureChannelDataType::UnsignedByte, backgroundColor);
+    // letsgothru terrain: construct with depthStencil=true so the FBO has
+    // depth+stencil attachments. Without these, fill/line drawables with
+    // enableDepth=true are silently dropped by Metal pipeline validation and
+    // the RTT comes back near-empty -- which is why terrain renders flat.
+    renderTargets[id] = std::make_shared<RenderTarget>(
+        context,
+        Size{tileSize, tileSize},
+        gfx::TextureChannelDataType::UnsignedByte,
+        backgroundColor,
+        /*depthStencil=*/true);
 }
 
 std::shared_ptr<RenderTarget> TexturePool::getRenderTarget(const UnwrappedTileID& id) const {

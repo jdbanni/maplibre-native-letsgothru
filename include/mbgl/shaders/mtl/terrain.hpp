@@ -64,6 +64,7 @@ struct FragmentStage {
     float4 position [[position, invariant]];
     float2 uv;
     float elevation;
+    float elevationMeters;
 };
 
 FragmentStage vertex vertexMain(thread const VertexStage vertx [[stage_in]],
@@ -107,6 +108,7 @@ FragmentStage vertex vertexMain(thread const VertexStage vertx [[stage_in]],
         .position    = position,
         .uv          = uv,
         .elevation   = packedValue,  // Pass packed RGBA to detect any non-zero values
+        .elevationMeters = elevationMeters,
     };
 }
 
@@ -125,7 +127,15 @@ half4 fragment fragmentMain(FragmentStage in [[stage_in]],
     // If map texture has valid data, use it; otherwise fall back to elevation-based coloring
     // Check if alpha is > 0 to detect valid map data
     if (mapColor.a > 0.01) {
-        return half4(mapColor);
+        // letsgothru/terrain-3d: brighten by elevation so the relief shape is
+        // visible on a near-uniform basemap. The mesh is already elevated in
+        // the vertex stage; this just bakes a soft elevation tint into the
+        // surface color so flat-lit fragments don't hide the geometry.
+        // A proper hillshade (computed from DEM gradient + light direction)
+        // is a follow-up.
+        const float relief = clamp(in.elevationMeters / 1500.0, -0.4, 0.6);
+        const float3 shaded = float3(mapColor.rgb) * (1.0 + relief * 0.6);
+        return half4(half3(shaded), 1.0);
     }
 
     // Fallback: elevation-based color gradient for debugging
