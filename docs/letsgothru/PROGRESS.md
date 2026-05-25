@@ -5,6 +5,156 @@ plus globe, ship a custom XCFramework + RN binding for letsgothru/apps/mobile.
 
 iOS is the primary target; macOS is for dev iteration only.
 
+## Phase 2 (2026-05-25) — Task 1 DONE, Task 2 partial
+
+### Task 1 — stencil assert fixed
+
+The `paint_parameters.cpp:348` assert no longer fires for any style with
+vector layers + a terrain block. Verified rendering
+`https://tiles.letsgothru.com/styles/outdoors.json` with terrain at z=12
+Snowdonia — no crash; symbol/label layers render. See
+`RENDERED-task1-2026-05-25.png`.
+
+**Root cause.** When terrain is enabled, the renderer moves fill/line
+drawables from their original `TileLayerGroup` into per-terrain-tile
+*RTT sub-layer-groups* held inside each `RenderTarget` (see
+`renderer_impl.cpp` line 282–319). Those sub-groups never had
+`setStencilTiles(...)` called on them, so when `mtl::TileLayerGroup::render`
+ran inside the RTT pass and the drawable later asked for
+`stencilModeForClipping(tileID)`, the tile was not in `tileClippingMaskIDs`
+and the assert blew up.
+
+**Fix (two-part).**
+1. `src/mbgl/renderer/renderer_impl.cpp` line ~315: when moving a drawable
+   into an RTT sub-group, call `drawable->setEnableStencil(false)`.
+   Inside the RTT FBO the source-tile stencil mask is the wrong space
+   anyway — the FBO is bounded by its own scissor + viewport, and the
+   drawable's matrix is the terrain RTT pos matrix (ortho 0..EXTENT,
+   not the world projection). So just turning stencil off is both
+   correct and removes the need to populate `tileClippingMaskIDs`.
+2. `src/mbgl/renderer/paint_parameters.cpp` line ~346: `stencilModeForClipping`
+   no longer asserts on a missing tile. Instead it returns
+   `gfx::StencilMode::disabled()` (debug-only log line included).
+   This is defence-in-depth for any other path that might still hit it.
+
+The PR's "tiles rendering onto smaller terrain tiles" TODO is partially
+addressed: we don't crash, and stencil clipping is gracefully disabled
+in the RTT pass. A full fix would propagate a per-terrain-tile clip mask
+list through the sub-group split, but the FBO bounds already constrain
+the draw so stencil clipping isn't required there.
+
+### Task 2 — visible terrain, partial
+
+Rendered at pitch=60° (`RENDERED-task2-2026-05-25.png`) — still no
+visible elevation. Two changes made toward it that compile and don't
+regress Task 1:
+
+1. **`src/mbgl/renderer/layers/terrain_layer_tweaker.cpp`** — multiplied
+   the exaggeration by a per-frame `metersToTileUnits` conversion factor
+   (`2^zoom * EXTENT / (cos(lat) * earth_circumference)`), so the
+   elevation passed to the vertex shader is in tile-space units rather
+   than raw metres. Without this, even very tall mountains produce
+   ~0.1 px of displacement.
+2. **`include/mbgl/shaders/mtl/terrain.hpp`** — swapped the DEM decode
+   from Mapbox terrain-rgb (`-10000 + ((R*256² + G*256 + B) * 0.1)`)
+   to Terrarium / Mapzen (`(R*256 + G + B/256) - 32768`). Our R2 DEM
+   is terrarium-encoded; PR #4190 hard-coded mapbox-rgb.
+
+These two land the right *math*. The remaining blocker is that the
+basemap fill layers are not visibly populating the RTT FBO that the
+terrain mesh samples. Compare:
+- `RENDERED-2D-2026-05-24.png` (no terrain, all vector fills visible)
+- `RENDERED-task1-2026-05-25.png` (terrain, only symbol layers visible,
+  fills missing)
+
+The terrain layer group reports 4–9 drawables drawn with valid Metal
+textures bound, and per-tile RTT targets are created. The fragment
+shader prefers `mapTexture.sample(...)` when `mapColor.a > 0.01`, so
+if the FBO has a background colour at alpha 1.0, we get the background
+without the fill geometry on top. Fill layers run their `update()` and
+register drawables, but those drawables, once moved into the RTT
+sub-group, do not produce visible output in the FBO. Suspect candidates:
+- The sub-group is being created with `renderToTerrain=true` but its
+  tweaker (the fill layer's `LayerTweaker`) computes the RTT pos matrix
+  on each call to `getTileMatrix`. That matrix is fine in shape but the
+  per-tile UBO it sets is the LAST write — and since the same tweaker
+  is shared with the (now-empty) parent group, there may be a write
+  order issue.
+- Each fill drawable also has its own clip mask / pattern textures that
+  were set up when the layer originally rendered to screen; they may
+  not survive the move to a different render-pass context.
+- The RTT FBO's depth/stencil attachment is implicit
+  (`RenderTarget::render` passes `clearDepth={}, clearStencil={}` — i.e.
+  no depth/stencil buffer). With our stencil-disable fix, fill drawables
+  should be fine. But fill drawables may have `getEnableDepth()=true` and
+  hit a `depthModeForSublayer` path that expects a depth buffer.
+
+A focused Phase 3 task would attach a depth+stencil buffer to the
+`RenderTarget` and re-test. The PR's "Object re-use" TODO also pertains
+here — RTT FBOs are fresh each frame in current code, but the drawables
+moved into them keep their cached state from the previous main-pass
+render. That state needs invalidating.
+
+See `TASK2-INVESTIGATION-2026-05-25.md` (added this run) for the full
+debug trail.
+
+### Files touched, Phase 2
+
+- `src/mbgl/renderer/paint_parameters.cpp` — replaced assert with graceful fallback + debug log
+- `src/mbgl/renderer/renderer_impl.cpp` — disable stencil on drawables moved into RTT sub-groups
+- `src/mbgl/renderer/layers/terrain_layer_tweaker.cpp` — meters → tile-units exaggeration
+- `include/mbgl/shaders/mtl/terrain.hpp` — terrarium DEM decode
+
+### Build note
+
+The macOS-bundled `/usr/bin/ar qc libmbgl-core.a $(huge_object_list)` now
+fails with `ar: libmbgl-core.a: Inappropriate file type or format`. Apple
+ar struggles with the very long argument list (the .a is ~30+ MB worth
+of `.o` files; the `qc` command line is ~100k chars). Swapped to
+Homebrew's `llvm-ar`/`llvm-ranlib` by editing
+`build-macos-metal/CMakeFiles/rules.ninja` directly (`s|/usr/bin/ar|.../llvm-ar|`,
+`s|/usr/bin/ranlib|.../llvm-ranlib|`). A clean `cmake --preset macos-metal`
+configure with `-DCMAKE_AR=/opt/homebrew/opt/llvm/bin/llvm-ar
+-DCMAKE_RANLIB=/opt/homebrew/opt/llvm/bin/llvm-ranlib` only takes
+effect on a from-scratch build — incremental cmake reconfigure caches
+the old rule. Either way, llvm-ar handles the argument list fine.
+
+### Phase 2 commit not landed in git yet
+
+I ran out of time on the git commit itself. The disk was 98% full (54 Gi
+free of 1.8 Ti) and `git commit --untracked-files=no --no-status` started
+producing `error: read error while indexing metrics/.../metrics.json:
+Operation timed out` on hundreds of files in `metrics/`. The commit was
+aborted by the filesystem; some files in `metrics/` may have been
+truncated as a side-effect (e.g. `metrics/macos-xcode11-release/render-tests/background-pattern/zoomed/metrics.json`
+disappeared from the working copy).
+
+Recovery for the next agent:
+
+```
+cd /Users/jdbanni/Desktop/Claude/maplibre-native-letsgothru
+# Restore the metrics tree (these aren't files we modified)
+git checkout HEAD -- metrics/
+# Stage only the four code files + four doc files we actually changed:
+git add src/mbgl/renderer/paint_parameters.cpp \
+        src/mbgl/renderer/renderer_impl.cpp \
+        src/mbgl/renderer/layers/terrain_layer_tweaker.cpp \
+        include/mbgl/shaders/mtl/terrain.hpp \
+        docs/letsgothru/PROGRESS.md \
+        docs/letsgothru/TASK2-INVESTIGATION-2026-05-25.md \
+        docs/letsgothru/RENDERED-task1-2026-05-25.png \
+        docs/letsgothru/RENDERED-task2-2026-05-25.png
+# Use the commit message in /tmp/commit-msg.txt if still present, else
+# the message at the top of this section:
+git commit -F /tmp/commit-msg.txt
+git push origin letsgothru/terrain-3d
+```
+
+Before retrying the commit, ensure the disk has more free space (clear
+ccache + maplibre cache + node_modules elsewhere) — the
+`refresh_index` step touches every indexed file's mtime, and a near-full
+disk slows that to a crawl.
+
 ## Phase 1 (2026-05-24) — DONE
 
 - [x] Forked `maplibre/maplibre-native` to `jdbanni/maplibre-native-letsgothru`

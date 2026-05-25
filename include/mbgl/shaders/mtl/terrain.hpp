@@ -83,15 +83,16 @@ FragmentStage vertex vertexMain(thread const VertexStage vertx [[stage_in]],
     // Sample DEM texture to get raw RGBA values
     float4 demSample = demTexture.sample(demSampler, uv);
 
-    // Decode Mapbox Terrain RGB format to get elevation in meters
-    // Format: height = -10000 + ((R*256*256 + G*256 + B) * 0.1)
+    // letsgothru/terrain-3d: decode Terrarium (Mapzen) encoding.
+    // height = (R*256 + G + B/256) - 32768
     // DEM values are in range [0, 1] so convert back to [0, 255]
+    // (Upstream PR #4190 assumed Mapbox terrain-rgb; we feed terrarium tiles.)
     float r = demSample.r * 255.0;
     float g = demSample.g * 255.0;
     float b = demSample.b * 255.0;
 
     // Calculate elevation in meters
-    float elevationMeters = -10000.0 + ((r * 256.0 * 256.0 + g * 256.0 + b) * 0.1);
+    float elevationMeters = (r * 256.0 + g + b / 256.0) - 32768.0;
 
     // Apply exaggeration for visible relief (default: 1.0, can be set higher for dramatic effect)
     float elevation = elevationMeters * props.exaggeration;

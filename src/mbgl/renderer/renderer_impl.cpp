@@ -312,6 +312,14 @@ void Renderer::Impl::render(const RenderTree& renderTree, const std::shared_ptr<
                     singleTileLayerGroup->addLayerTweaker(drawables[0]->getLayerTweaker());
                 }
                 for (auto& drawable : drawables) {
+                    // letsgothru/terrain-3d: source-tile stencil clipping does not apply inside
+                    // the per-terrain-tile RTT FBO. The FBO is already bounded by its scissor
+                    // rect and the drawable is repositioned via getTerrainRttPosMatrix(), so the
+                    // original layer's stencil mask (which was projected in screen space) would
+                    // be incorrect here even if it were available. Disable stencil so the
+                    // drawable renders without consulting tileClippingMaskIDs (which has not
+                    // been populated for this sub-group, see paint_parameters.cpp).
+                    drawable->setEnableStencil(false);
                     singleTileLayerGroup->addDrawable(RenderPass::Translucent, tileID, std::move(drawable));
                 }
             }

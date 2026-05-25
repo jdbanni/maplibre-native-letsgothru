@@ -345,8 +345,22 @@ void PaintParameters::renderTileClippingMasks(const RenderTiles& renderTiles) {
 
 gfx::StencilMode PaintParameters::stencilModeForClipping(const UnwrappedTileID& tileID) const {
     auto it = tileClippingMaskIDs.find(tileID);
-    assert(it != tileClippingMaskIDs.end());
-    const int32_t id = it != tileClippingMaskIDs.end() ? it->second : 0b00000000;
+    // letsgothru/terrain-3d: do NOT assert here. When terrain is enabled, vector layers may be
+    // moved into per-terrain-tile RTT sub-layer-groups (see renderer_impl.cpp) where the original
+    // layer's `stencilTiles` list is not propagated. In that case we want stencil clipping to be a
+    // no-op (return a disabled stencil mode), rather than crashing. The RTT FBO already bounds
+    // rendering via scissor + viewport, so source-tile stencil clipping is not required there.
+    if (it == tileClippingMaskIDs.end()) {
+#if !defined(NDEBUG)
+        // Print one diagnostic line per missing tile so we can audit the situation if needed.
+        // This is debug-build-only to keep release renders quiet.
+        Log::Info(Event::Render,
+                  std::string("stencilModeForClipping: tile ") + util::toString(tileID) +
+                      " not in tileClippingMaskIDs (terrain RTT path); returning disabled stencil");
+#endif
+        return gfx::StencilMode::disabled();
+    }
+    const int32_t id = it->second;
     return gfx::StencilMode{.test = gfx::StencilMode::Equal{0b11111111},
                             .ref = id,
                             .mask = 0b00000000,

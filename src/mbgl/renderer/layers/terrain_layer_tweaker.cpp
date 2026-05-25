@@ -37,8 +37,16 @@ void TerrainLayerTweaker::execute(LayerGroupBase& layerGroup, const PaintParamet
 
     // Get terrain properties
     const float baseExaggeration = terrain->getExaggeration();
-    // Apply moderate exaggeration for visible 3D terrain (3x)
-    const float exaggeration = baseExaggeration * 3.0f;
+    // letsgothru/terrain-3d: convert elevation from meters to tile-space units.
+    // At zoom z and latitude lat, 1 meter ≈ (2^z * EXTENT) / (cos(lat) * earth_circumference) tile units.
+    // We bake this into the exaggeration so the shader doesn't need to know about projection.
+    constexpr float EARTH_CIRCUMFERENCE_M = 40075016.686f;
+    constexpr float EXTENT_F = 8192.0f;
+    const float zoom = static_cast<float>(parameters.state.getZoom());
+    const float latRad = static_cast<float>(parameters.state.getLatLng().latitude() * M_PI / 180.0);
+    const float cosLat = std::max(0.05f, std::cos(latRad));
+    const float metersToTileUnits = std::exp2(zoom) * EXTENT_F / (cosLat * EARTH_CIRCUMFERENCE_M);
+    const float exaggeration = baseExaggeration * metersToTileUnits;
     const float elevationOffset = 0.0f;
 
     static bool hasLoggedExaggeration = false;
