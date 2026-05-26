@@ -30,6 +30,7 @@ class ImageManager;
 class LineAtlas;
 class PatternAtlas;
 class UnwrappedTileID;
+class RenderTerrain;
 
 namespace gfx {
 class Context;
@@ -153,6 +154,9 @@ public:
     // being rendered into this terrain tile's offscreen FBO; getTileMatrix uses
     // it to produce the per-tile RTT matrix. Unset during normal screen passes.
     std::optional<UnwrappedTileID> terrainTileID;
+
+    // letsgothru/terrain-3d: active terrain (for elevation lookups), or null.
+    const RenderTerrain* terrain = nullptr;
 };
 
 } // namespace mbgl

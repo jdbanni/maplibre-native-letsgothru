@@ -9,6 +9,8 @@
 #include <mbgl/renderer/buckets/symbol_bucket.hpp>
 #include <mbgl/renderer/layer_group.hpp>
 #include <mbgl/renderer/paint_parameters.hpp>
+#include <mbgl/renderer/render_terrain.hpp>
+#include <cmath>
 #include <mbgl/renderer/paint_property_binder.hpp>
 #include <mbgl/renderer/render_tree.hpp>
 #include <mbgl/shaders/shader_program_base.hpp>
@@ -99,12 +101,34 @@ void SymbolLayerTweaker::execute(LayerGroupBase& layerGroup, const PaintParamete
     const auto isScreenSpace = screenSpaceProp.isConstant() ? screenSpaceProp.asConstant()
                                                             : SymbolScreenSpace::defaultValue();
 
+    // letsgothru/terrain-3d: metres->tile-units factor (matches TerrainLayerTweaker)
+    // so labels are raised onto the terrain surface. 0 when no terrain active.
+    // MLN_NO_SYMBOL_ELEVATION disables the lift (debug A/B aid).
+    const bool symbolElevationEnabled = parameters.terrain && !std::getenv("MLN_NO_SYMBOL_ELEVATION");
+    float metersToTileUnits = 0.0f;
+    if (parameters.terrain) {
+        constexpr float EXTENT_F = 8192.0f;
+        constexpr float EARTH_CIRCUMFERENCE_M = 40075016.686f;
+        const float latRad = static_cast<float>(state.getLatLng().latitude() * M_PI / 180.0);
+        const float cosLat = std::max(0.05f, std::cos(latRad));
+        metersToTileUnits = std::exp2(static_cast<float>(state.getZoom())) * EXTENT_F /
+                            (cosLat * EARTH_CIRCUMFERENCE_M);
+    }
+
     visitLayerGroupDrawables(layerGroup, [&](gfx::Drawable& drawable) {
         if (!drawable.getTileID() || !drawable.getData()) {
             return;
         }
 
         const auto tileID = drawable.getTileID()->toUnwrapped();
+
+        // letsgothru/terrain-3d: tile-centre elevation (tile units) to lift labels
+        // onto the terrain. Approximate (per-tile, not per-anchor) for now.
+        const float terrainElevation =
+            symbolElevationEnabled
+                ? parameters.terrain->getElevationWithExaggeration(tileID, 4096.0f, 4096.0f) * metersToTileUnits
+                : 0.0f;
+
         const auto& symbolData = static_cast<gfx::SymbolDrawableData&>(*drawable.getData());
         const auto isText = (symbolData.symbolType == SymbolType::Text);
 
@@ -192,6 +216,7 @@ void SymbolLayerTweaker::execute(LayerGroupBase& layerGroup, const PaintParamete
             .opacity_t = getInterpFactor<TextOpacity, IconOpacity, 0>(paintProperties, isText, zoom),
             .halo_width_t = getInterpFactor<TextHaloWidth, IconHaloWidth, 0>(paintProperties, isText, zoom),
             .halo_blur_t = getInterpFactor<TextHaloBlur, IconHaloBlur, 0>(paintProperties, isText, zoom),
+            .terrain_elevation = terrainElevation,
         };
 
 #if MLN_UBO_CONSOLIDATION

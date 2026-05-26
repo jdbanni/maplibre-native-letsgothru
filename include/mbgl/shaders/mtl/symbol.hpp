@@ -40,7 +40,11 @@ struct alignas(16) SymbolDrawableUBO {
     /* 248 */ float opacity_t;
     /* 252 */ float halo_width_t;
     /* 256 */ float halo_blur_t;
-    /* 260 */
+
+    // letsgothru/terrain-3d: tile elevation in tile-units (metres * exaggeration *
+    // metersToTileUnits), 0 when no terrain. Raises labels onto the surface.
+    /* 260 */ float terrain_elevation;
+    /* 264 */
 };
 static_assert(sizeof(SymbolDrawableUBO) == 17 * 16, "wrong size");
 
@@ -195,7 +199,15 @@ FragmentStage vertex vertexMain(thread const VertexStage vertx [[stage_in]],
     const float4 projected_pos = drawable.label_plane_matrix * float4(vertx.projected_pos.xy, 0.0, 1.0);
     const float2 pos0 = projected_pos.xy / projected_pos.w;
     const float2 posOffset = a_offset * max(a_minFontScale, fontScale) / 32.0 + a_pxoffset / 16.0;
-    const float4 position = drawable.coord_matrix * float4(pos0 + rotation_matrix * posOffset, 0.0, 1.0);
+    const float4 rawPosition = drawable.coord_matrix * float4(pos0 + rotation_matrix * posOffset, 0.0, 1.0);
+    // letsgothru/terrain-3d: raise the label onto the terrain by the screen-space
+    // projection of the anchor's elevation (drawable.terrain_elevation, tile units).
+    float4 position = rawPosition;
+    if (drawable.terrain_elevation != 0.0) {
+        const float4 flatA = drawable.matrix * float4(a_pos, 0.0, 1.0);
+        const float4 raisedA = drawable.matrix * float4(a_pos, drawable.terrain_elevation, 1.0);
+        position.xy += (raisedA.xy / raisedA.w - flatA.xy / flatA.w) * rawPosition.w;
+    }
 
     return {
         .position     = position,
@@ -376,7 +388,15 @@ FragmentStage vertex vertexMain(thread const VertexStage vertx [[stage_in]],
     const float4 projected_pos = drawable.label_plane_matrix * float4(vertx.projected_pos.xy, 0.0, 1.0);
     const float2 pos_rot = a_offset / 32.0 * fontScale + a_pxoffset;
     const float2 pos0 = projected_pos.xy / projected_pos.w + rotation_matrix * pos_rot;
-    const float4 position = drawable.coord_matrix * float4(pos0, 0.0, 1.0);
+    const float4 rawPosition = drawable.coord_matrix * float4(pos0, 0.0, 1.0);
+    // letsgothru/terrain-3d: raise the label onto the terrain by the screen-space
+    // projection of the anchor's elevation (drawable.terrain_elevation, tile units).
+    float4 position = rawPosition;
+    if (drawable.terrain_elevation != 0.0) {
+        const float4 flatA = drawable.matrix * float4(a_pos, 0.0, 1.0);
+        const float4 raisedA = drawable.matrix * float4(a_pos, drawable.terrain_elevation, 1.0);
+        position.xy += (raisedA.xy / raisedA.w - flatA.xy / flatA.w) * rawPosition.w;
+    }
 
     return {
         .position     = position,
@@ -614,7 +634,15 @@ FragmentStage vertex vertexMain(thread const VertexStage vertx [[stage_in]],
     const float4 projected_pos = drawable.label_plane_matrix * float4(vertx.projected_pos.xy, 0.0, 1.0);
     const float2 pos_rot = a_offset / 32.0 * fontScale;
     const float2 pos0 = projected_pos.xy / projected_pos.w + rotation_matrix * pos_rot;
-    const float4 position = drawable.coord_matrix * float4(pos0, 0.0, 1.0);
+    const float4 rawPosition = drawable.coord_matrix * float4(pos0, 0.0, 1.0);
+    // letsgothru/terrain-3d: raise the label onto the terrain by the screen-space
+    // projection of the anchor's elevation (drawable.terrain_elevation, tile units).
+    float4 position = rawPosition;
+    if (drawable.terrain_elevation != 0.0) {
+        const float4 flatA = drawable.matrix * float4(a_pos, 0.0, 1.0);
+        const float4 raisedA = drawable.matrix * float4(a_pos, drawable.terrain_elevation, 1.0);
+        position.xy += (raisedA.xy / raisedA.w - flatA.xy / flatA.w) * rawPosition.w;
+    }
     const float gamma_scale = position.w;
     const bool is_icon = (is_sdf == ICON);
 

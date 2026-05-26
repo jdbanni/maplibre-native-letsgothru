@@ -29,7 +29,11 @@ struct alignas(16) SymbolDrawableUBO {
     /* 248 */ float opacity_t;
     /* 252 */ float halo_width_t;
     /* 256 */ float halo_blur_t;
-    /* 260 */
+
+    // letsgothru/terrain-3d: anchor elevation in tile units (DEM meters *
+    // exaggeration * metersToTileUnits), or 0 when terrain is inactive.
+    /* 260 */ float terrain_elevation;
+    /* 264 */
 };
 static_assert(sizeof(SymbolDrawableUBO) == 17 * 16);
 
