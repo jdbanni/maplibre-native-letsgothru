@@ -211,3 +211,36 @@ binding that the offscreen encoder drops.
 
 Current working tree holds the render-in-place prototype + the stencil fix
 (uncommitted); terrain relief still renders, basemap drape pending bug #2.
+
+## GPU readback findings (2026-05-26, session 3)
+
+Rather than a GUI capture, encoded the matrix the fill vertex reads (m0, m12,
+m13) into the fragment colour, bypassed the position so fragments are on-screen,
+and made the terrain shader output the raw RTT — so the saved PNG *is* the
+matrix, decodable from pixel colour.
+
+**Result: the matrix IS delivered to the vertex with valid values.** At z13
+top-down the readback showed distinct per-terrain-tile colours with m0 ≈ 1/8192
+(the dz=1 ortho scale) and varying translation — i.e. valid RTT matrices, not
+zero and not screen-space. So bug #2 is **not** a delivery/binding failure and
+**not** the UBO race.
+
+That redirects bug #2 to the **RTT-cell ↔ mesh-UV coordinate mapping**: the
+fills are placed into the FBO by `getTerrainRttPosMatrix`, but the terrain mesh
+samples a different location, so it reads background. Removing the mesh's
+`1.0 - uv.y` Y-flip alone did **not** fix it (no visual change), so it's not a
+simple vertical mirror — the cell offset/scale vs the mesh sample coordinate is
+off in a way that needs pinning down precisely.
+
+### Next step
+
+A surgical readback: in the fill fragment, output the source tile's *intended*
+normalised FBO position (derived from its matrix), and separately have the
+terrain mesh output its *sample* coordinate — render both and compare where a
+known feature lands vs where the mesh looks for it. That pins the exact
+transform discrepancy (offset, scale, or axis) between `getTerrainRttPosMatrix`
+(layer_tweaker.cpp) and the mesh UV in `render_terrain.cpp`/`terrain.hpp`.
+Alternatively, a Metal frame capture shows it directly.
+
+Net: stencil culling fixed; matrix delivery proven correct; remaining work is a
+contained coordinate-transform fix between the RTT placement and mesh sampling.
