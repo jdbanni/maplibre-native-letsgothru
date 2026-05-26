@@ -197,12 +197,55 @@ void RenderTerrain::update(RenderOrchestrator& orchestrator,
     }
 }
 
-float RenderTerrain::getElevation(const UnwrappedTileID& /*tileID*/, float /*x*/, float /*y*/) const {
-    // TODO: Implement DEM tile lookup and bilinear interpolation
-    // This would:
-    // 1. Find the DEM tile covering this coordinate
-    // 2. Get the DEMData from the tile
-    // 3. Perform bilinear interpolation to get elevation
+float RenderTerrain::getElevation(const UnwrappedTileID& tileID, float x, float y) const {
+    // letsgothru/terrain-3d: DEM elevation lookup with bilinear interpolation,
+    // mirroring GL JS Terrain.getDEMElevation. Returns raw metres (exaggeration
+    // is applied by getElevationWithExaggeration). x,y are tile units [0,EXTENT].
+    if (!demSource) {
+        return 0.0f;
+    }
+    auto renderTiles = demSource->getRawRenderTiles();
+    const int qz = tileID.canonical.z;
+    // Query point in global tile-space at the query zoom.
+    const double gx = static_cast<double>(tileID.canonical.x) + x / util::EXTENT;
+    const double gy = static_cast<double>(tileID.canonical.y) + y / util::EXTENT;
+
+    for (const auto& renderTile : *renderTiles) {
+        const auto& demCanonical = renderTile.getOverscaledTileID().canonical;
+        const int dz = demCanonical.z;
+        const double scale = std::pow(2.0, dz - qz);
+        const double dgx = gx * scale; // query position in DEM-zoom tile units
+        const double dgy = gy * scale;
+        if (static_cast<int>(std::floor(dgx)) != static_cast<int>(demCanonical.x) ||
+            static_cast<int>(std::floor(dgy)) != static_cast<int>(demCanonical.y)) {
+            continue; // this DEM tile doesn't cover the point
+        }
+        const auto& tile = renderTile.getTile();
+        if (tile.kind != Tile::Kind::RasterDEM) {
+            continue;
+        }
+        const auto* demTile = static_cast<const RasterDEMTile*>(&tile);
+        const auto* bucket = demTile->getBucket();
+        if (!bucket) {
+            continue;
+        }
+        const auto& dem = bucket->getDEMData();
+        const int dim = dem.dim;
+        // Fractional position within the DEM tile -> DEM pixel (sample centres).
+        const double fx = dgx - std::floor(dgx);
+        const double fy = dgy - std::floor(dgy);
+        const double px = fx * dim - 0.5;
+        const double py = fy * dim - 0.5;
+        const int x0 = static_cast<int>(std::floor(px));
+        const int y0 = static_cast<int>(std::floor(py));
+        const double tx = px - x0;
+        const double ty = py - y0;
+        const auto clampIdx = [dim](int v) { return v < -1 ? -1 : (v > dim ? dim : v); };
+        const auto s = [&](int sx, int sy) { return static_cast<double>(dem.get(clampIdx(sx), clampIdx(sy))); };
+        const double e = s(x0, y0) * (1 - tx) * (1 - ty) + s(x0 + 1, y0) * tx * (1 - ty) +
+                         s(x0, y0 + 1) * (1 - tx) * ty + s(x0 + 1, y0 + 1) * tx * ty;
+        return static_cast<float>(e);
+    }
     return 0.0f;
 }
 
