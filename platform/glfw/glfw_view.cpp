@@ -1279,6 +1279,7 @@ void GLFWView::report(float duration) {
         oss.precision(2);
         oss << "Frame time: " << std::fixed << frameTime << "ms (" << 1000 / frameTime << "fps)";
         mbgl::Log::Info(mbgl::Event::Render, oss.str());
+        setWindowTitle(oss.str());
 
         frames = 0;
         frameTime = 0;
