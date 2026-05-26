@@ -209,6 +209,15 @@ void LineLayerTweaker::execute(LayerGroupBase& layerGroup, const PaintParameters
 
         const UnwrappedTileID tileID = drawable.getTileID()->toUnwrapped();
 
+        // letsgothru/terrain-3d perf: skip drawables not overlapping the current
+        // terrain RTT tile (see fill_layer_tweaker for rationale).
+        if (parameters.terrainTileID) {
+            const auto& t = *parameters.terrainTileID;
+            if (!(tileID == t || tileID.isChildOf(t) || t.isChildOf(tileID))) {
+                return;
+            }
+        }
+
         auto* binders = static_cast<LineBinders*>(drawable.getBinders());
         const auto* tile = drawable.getRenderTile();
         if (!binders || !tile) {

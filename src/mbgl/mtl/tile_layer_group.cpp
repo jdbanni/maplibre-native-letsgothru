@@ -128,6 +128,19 @@ void TileLayerGroup::render(RenderOrchestrator&, PaintParameters& parameters) {
             return;
         }
 
+        // letsgothru/terrain-3d perf: in the per-terrain-tile RTT pass we render
+        // the draped layer groups in place, so every draped drawable is visited
+        // for every terrain FBO. Skip drawables whose source tile doesn't overlap
+        // this terrain tile -- they'd be culled by a zero matrix anyway. This is
+        // GL JS's proxy mapping: only a tile's own source content is drawn.
+        if (parameters.terrainTileID && drawable.getTileID()) {
+            const auto u = drawable.getTileID()->toUnwrapped();
+            const auto& t = *parameters.terrainTileID;
+            if (!(u == t || u.isChildOf(t) || t.isChildOf(u))) {
+                return;
+            }
+        }
+
         if (!bindUBOs) {
             uniformBuffers.bindMtl(renderPass);
             bindUBOs = true;

@@ -70,6 +70,16 @@ void FillLayerTweaker::execute(LayerGroupBase& layerGroup, const PaintParameters
 
         const UnwrappedTileID tileID = drawable.getTileID()->toUnwrapped();
 
+        // letsgothru/terrain-3d perf: when building UBOs for a terrain RTT tile,
+        // skip drawables whose source tile doesn't overlap it (they'd be culled
+        // by a zero matrix). Avoids re-tweaking every drawable for every FBO.
+        if (parameters.terrainTileID) {
+            const auto& t = *parameters.terrainTileID;
+            if (!(tileID == t || tileID.isChildOf(t) || t.isChildOf(tileID))) {
+                return;
+            }
+        }
+
         auto* binders = static_cast<FillBinders*>(drawable.getBinders());
         const auto* tile = drawable.getRenderTile();
         if (!binders || !tile) {
