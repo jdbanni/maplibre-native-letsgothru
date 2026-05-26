@@ -7,6 +7,7 @@
 #include <mbgl/renderer/layer_tweaker.hpp>
 #include <mbgl/renderer/paint_parameters.hpp>
 #include <mbgl/renderer/render_tree.hpp>
+#include <mbgl/renderer/render_orchestrator.hpp>
 
 namespace mbgl {
 
@@ -102,36 +103,92 @@ void RenderTarget::render(RenderOrchestrator& orchestrator, const RenderTree& re
     const auto& size = getTexture()->getSize();
     parameters.scissorRect = {.x = 0, .y = 0, .width = size.width, .height = size.height};
 
-    // Run layer tweakers to update any dynamic elements
-    parameters.currentLayer = 0;
-    visitLayerGroups([&](LayerGroupBase& layerGroup) {
-        layerGroup.runTweakers(renderTree, parameters);
-        parameters.currentLayer++;
-    });
+    // letsgothru/terrain-3d: bind global uniform buffers for this offscreen pass.
+    // Render targets are drawn in drawableTargetsPass, BEFORE the main pass binds
+    // globals (renderer_impl.cpp), and each Metal render pass starts with no
+    // bindings — so without this the draped drawables' shaders see no globals.
+    context.bindGlobalUniformBuffers(*parameters.renderPass);
 
-    // draw layer groups, opaque pass
-    parameters.pass = RenderPass::Opaque;
-    parameters.depthRangeSize = 1 -
-                                (numLayerGroups() + 2) * PaintParameters::numSublayers * PaintParameters::depthEpsilon;
+    if (terrainTileID) {
+        // letsgothru/terrain-3d render-in-place draping (GL-JS-style): rather than
+        // relocating drawables into this target, render the style's draped layer
+        // groups in place with this terrain tile's RTT matrix. Source tiles that
+        // don't overlap this terrain tile get a zero matrix and are culled (see
+        // LayerTweaker::getTileMatrix), so every draped drawable can be visited
+        // for every FBO and only the overlapping ones survive.
+        const auto savedTerrainTileID = parameters.terrainTileID;
+        parameters.terrainTileID = terrainTileID;
+        const auto count = orchestrator.numLayerGroups();
 
-    parameters.currentLayer = 0;
-    visitLayerGroupsReversed([&](LayerGroupBase& layerGroup) {
-        layerGroup.render(orchestrator, parameters);
-        parameters.currentLayer++;
-    });
+        // letsgothru/terrain-3d: source-tile stencil clipping is meaningless in
+        // the per-terrain-tile FBO (the clip masks are projected in screen space).
+        // Disable stencil on the draped drawables so they aren't culled here.
+        // They are only rendered into the FBO (skipped on screen), so this is safe.
+        orchestrator.visitLayerGroups([&](LayerGroupBase& layerGroup) {
+            if (layerGroup.shouldRenderToTerrain()) {
+                visitLayerGroupDrawables(layerGroup, [](gfx::Drawable& d) { d.setEnableStencil(false); });
+            }
+        });
 
-    // draw layer groups, translucent pass
-    parameters.pass = RenderPass::Translucent;
-    parameters.depthRangeSize = 1 -
-                                (numLayerGroups() + 2) * PaintParameters::numSublayers * PaintParameters::depthEpsilon;
+        parameters.currentLayer = 0;
+        orchestrator.visitLayerGroups([&](LayerGroupBase& layerGroup) {
+            if (layerGroup.shouldRenderToTerrain()) {
+                layerGroup.runTweakers(renderTree, parameters);
+            }
+            parameters.currentLayer++;
+        });
 
-    parameters.currentLayer = static_cast<uint32_t>(numLayerGroups()) - 1;
-    visitLayerGroups([&](LayerGroupBase& layerGroup) {
-        layerGroup.render(orchestrator, parameters);
-        if (parameters.currentLayer > 0) {
-            parameters.currentLayer--;
-        }
-    });
+        parameters.pass = RenderPass::Opaque;
+        parameters.depthRangeSize = 1 - (count + 2) * PaintParameters::numSublayers * PaintParameters::depthEpsilon;
+        parameters.currentLayer = 0;
+        orchestrator.visitLayerGroupsReversed([&](LayerGroupBase& layerGroup) {
+            if (layerGroup.shouldRenderToTerrain()) {
+                layerGroup.render(orchestrator, parameters);
+            }
+            parameters.currentLayer++;
+        });
+
+        parameters.pass = RenderPass::Translucent;
+        parameters.depthRangeSize = 1 - (count + 2) * PaintParameters::numSublayers * PaintParameters::depthEpsilon;
+        parameters.currentLayer = count > 0 ? static_cast<uint32_t>(count) - 1 : 0;
+        orchestrator.visitLayerGroups([&](LayerGroupBase& layerGroup) {
+            if (layerGroup.shouldRenderToTerrain()) {
+                layerGroup.render(orchestrator, parameters);
+            }
+            if (parameters.currentLayer > 0) {
+                parameters.currentLayer--;
+            }
+        });
+
+        parameters.terrainTileID = savedTerrainTileID;
+    } else {
+        // Existing path (e.g. hillshade RTT): render this target's own sub-groups.
+        parameters.currentLayer = 0;
+        visitLayerGroups([&](LayerGroupBase& layerGroup) {
+            layerGroup.runTweakers(renderTree, parameters);
+            parameters.currentLayer++;
+        });
+
+        parameters.pass = RenderPass::Opaque;
+        parameters.depthRangeSize = 1 - (numLayerGroups() + 2) * PaintParameters::numSublayers *
+                                            PaintParameters::depthEpsilon;
+        parameters.currentLayer = 0;
+        visitLayerGroupsReversed([&](LayerGroupBase& layerGroup) {
+            layerGroup.render(orchestrator, parameters);
+            parameters.currentLayer++;
+        });
+
+        parameters.pass = RenderPass::Translucent;
+        parameters.depthRangeSize = 1 - (numLayerGroups() + 2) * PaintParameters::numSublayers *
+                                            PaintParameters::depthEpsilon;
+        parameters.currentLayer = static_cast<uint32_t>(numLayerGroups()) - 1;
+        visitLayerGroups([&](LayerGroupBase& layerGroup) {
+            layerGroup.render(orchestrator, parameters);
+            if (parameters.currentLayer > 0) {
+                parameters.currentLayer--;
+            }
+        });
+    }
 
     parameters.renderPass.reset();
     parameters.encoder->present(*offscreenTexture);

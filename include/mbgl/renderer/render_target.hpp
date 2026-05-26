@@ -3,10 +3,12 @@
 #include <mbgl/gfx/types.hpp>
 #include <mbgl/util/size.hpp>
 #include <mbgl/util/color.hpp>
+#include <mbgl/tile/tile_id.hpp>
 
 #include <functional>
 #include <map>
 #include <memory>
+#include <optional>
 #include <string>
 
 namespace mbgl {
@@ -91,12 +93,16 @@ public:
     /// Render the layer groups
     void render(RenderOrchestrator&, const RenderTree&, PaintParameters&);
 
+    /// letsgothru/terrain-3d render-in-place: the terrain tile this FBO drapes.
+    void setTerrainTileID(const UnwrappedTileID& id) { terrainTileID = id; }
+
 protected:
     gfx::Context& context;
     std::unique_ptr<gfx::OffscreenTexture> offscreenTexture;
     using LayerGroupMap = std::map<int32_t, LayerGroupBasePtr>;
     LayerGroupMap layerGroupsByLayerIndex;
     Color backgroundColor;
+    std::optional<UnwrappedTileID> terrainTileID;
 };
 
 } // namespace mbgl

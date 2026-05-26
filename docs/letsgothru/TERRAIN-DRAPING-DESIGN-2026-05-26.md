@@ -1,5 +1,21 @@
 # Terrain basemap draping — GL JS vs Native, and a render-in-place redesign
 
+> **SOLVED 2026-05-26.** The letsgothru vector basemap now drapes onto the 3D
+> terrain (lakes, roads, landcover on the elevated, hillshaded mesh — see
+> `RENDERED-draped-3d-2026-05-26.png`). It took render-in-place draping plus
+> **three** offscreen-pass bug fixes, found by GPU readback:
+> 1. **Stencil culling** — draped drawables' clip masks are screen-space and
+>    meaningless in the per-tile FBO; disable stencil on them
+>    (`render_target.cpp`).
+> 2. **Z clipping** — `getTerrainRttPosMatrix`'s GL-convention ortho maps the
+>    flat (z=0) drape to clip z = −1, which Metal/Vulkan/WebGPU clip away. Force
+>    the matrix z-translation to 0 (`layer_tweaker.cpp`).
+> 3. **Y-flip** — the mesh sampled the RTT at `1.0 - uv.y`, the mirrored row;
+>    sample at `uv.y` (`terrain.hpp`).
+> Plus render-in-place (no drawable relocation) + per-tile RTT matrix context.
+> The sections below are the investigation record that led here.
+
+
 Date: 2026-05-26. Author: letsgothru (Claude).
 
 ## Problem

@@ -280,51 +280,12 @@ void Renderer::Impl::render(const RenderTree& renderTree, const std::shared_ptr<
 
     orchestrator.processChanges();
     orchestrator.addRenderTargets(texturePool);
-    orchestrator.visitLayerGroups([&](LayerGroupBase& layerGroupBase) {
-        if (!layerGroupBase.shouldRenderToTerrain()) {
-            return;
-        }
-        if (layerGroupBase.getType() != LayerGroupBase::Type::TileLayerGroup) {
-            return;
-        }
-        TileLayerGroup& layerGroup = static_cast<TileLayerGroup&>(layerGroupBase);
-        std::vector<OverscaledTileID> tileIDs;
-        layerGroup.visitDrawables([&](gfx::Drawable& drawable) { tileIDs.emplace_back(drawable.getTileID().value()); });
-        std::map<UnwrappedTileID, TileLayerGroupPtr> singleTileLayerGroups;
-        for (const OverscaledTileID& tileID : tileIDs) {
-            std::optional<UnwrappedTileID> terrainTileID;
-            RenderTargetPtr renderTarget = texturePool.getRenderTargetAncestorOrDescendant(tileID.toUnwrapped(),
-                                                                                           terrainTileID);
-            if (!renderTarget) {
-                continue;
-            }
-            bool layerGroupPrexists = singleTileLayerGroups.contains(terrainTileID.value());
-            if (!layerGroupPrexists) {
-                singleTileLayerGroups[terrainTileID.value()] = context.createTileLayerGroup(
-                    layerGroup.getLayerIndex(), /*initialCapacity=*/1, layerGroupBase.getName(), true);
-            }
-            TileLayerGroupPtr singleTileLayerGroup = singleTileLayerGroups[terrainTileID.value()];
-            renderTarget->addLayerGroup(singleTileLayerGroup, /*replace=*/true);
-            std::vector<gfx::UniqueDrawable> drawables = layerGroup.removeDrawables(RenderPass::Translucent, tileID);
-
-            if (!drawables.empty()) {
-                if (!layerGroupPrexists) {
-                    singleTileLayerGroup->addLayerTweaker(drawables[0]->getLayerTweaker());
-                }
-                for (auto& drawable : drawables) {
-                    // letsgothru/terrain-3d: source-tile stencil clipping does not apply inside
-                    // the per-terrain-tile RTT FBO. The FBO is already bounded by its scissor
-                    // rect and the drawable is repositioned via getTerrainRttPosMatrix(), so the
-                    // original layer's stencil mask (which was projected in screen space) would
-                    // be incorrect here even if it were available. Disable stencil so the
-                    // drawable renders without consulting tileClippingMaskIDs (which has not
-                    // been populated for this sub-group, see paint_parameters.cpp).
-                    drawable->setEnableStencil(false);
-                    singleTileLayerGroup->addDrawable(RenderPass::Translucent, tileID, std::move(drawable));
-                }
-            }
-        }
-    });
+    // letsgothru/terrain-3d render-in-place draping (PROTOTYPE): the original PR
+    // relocated draped drawables into per-terrain-tile RTT sub-groups here, which
+    // broke their per-draw uniform binding (fills rasterised nothing). We no
+    // longer move drawables. Instead RenderTarget::render draws the draped layer
+    // groups in place with a per-tile RTT matrix, and the screen passes below
+    // skip draped groups. See docs/letsgothru/TERRAIN-DRAPING-DESIGN-2026-05-26.md.
 
     // Upload layer groups
     {
@@ -459,7 +420,11 @@ void Renderer::Impl::render(const RenderTree& renderTree, const std::shared_ptr<
         // draw layer groups, opaque pass
         parameters.currentLayer = 0;
         orchestrator.visitLayerGroupsReversed([&](LayerGroupBase& layerGroup) {
-            layerGroup.render(orchestrator, parameters);
+            // letsgothru/terrain-3d render-in-place: draped layers are rendered
+            // into the terrain FBOs (RenderTarget::render), not to the screen.
+            if (!layerGroup.shouldRenderToTerrain()) {
+                layerGroup.render(orchestrator, parameters);
+            }
             parameters.currentLayer++;
         });
     };
@@ -473,7 +438,11 @@ void Renderer::Impl::render(const RenderTree& renderTree, const std::shared_ptr<
         // draw layer groups, translucent pass
         parameters.currentLayer = static_cast<uint32_t>(orchestrator.numLayerGroups()) - 1;
         orchestrator.visitLayerGroups([&](LayerGroupBase& layerGroup) {
-            layerGroup.render(orchestrator, parameters);
+            // letsgothru/terrain-3d render-in-place: draped layers go to the
+            // terrain FBOs, not the screen.
+            if (!layerGroup.shouldRenderToTerrain()) {
+                layerGroup.render(orchestrator, parameters);
+            }
             if (parameters.currentLayer > 0) {
                 parameters.currentLayer--;
             }

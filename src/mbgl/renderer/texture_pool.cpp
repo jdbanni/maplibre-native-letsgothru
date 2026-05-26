@@ -13,12 +13,16 @@ void TexturePool::createRenderTarget(gfx::Context& context, const UnwrappedTileI
     // depth+stencil attachments. Without these, fill/line drawables with
     // enableDepth=true are silently dropped by Metal pipeline validation and
     // the RTT comes back near-empty -- which is why terrain renders flat.
-    renderTargets[id] = std::make_shared<RenderTarget>(
+    auto renderTarget = std::make_shared<RenderTarget>(
         context,
         Size{tileSize, tileSize},
         gfx::TextureChannelDataType::UnsignedByte,
         backgroundColor,
         /*depthStencil=*/true);
+    // letsgothru/terrain-3d render-in-place: remember which terrain tile this FBO
+    // drapes, so RenderTarget::render can set the per-tile RTT matrix context.
+    renderTarget->setTerrainTileID(id);
+    renderTargets[id] = std::move(renderTarget);
 }
 
 std::shared_ptr<RenderTarget> TexturePool::getRenderTarget(const UnwrappedTileID& id) const {

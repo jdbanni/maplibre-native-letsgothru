@@ -11,11 +11,13 @@
 #include <mbgl/gfx/color_mode.hpp>
 #include <mbgl/gfx/scissor_rect.hpp>
 #include <mbgl/util/mat4.hpp>
+#include <mbgl/tile/tile_id.hpp>
 
 #include <array>
 #include <functional>
 #include <iterator>
 #include <map>
+#include <optional>
 #include <set>
 #include <vector>
 
@@ -146,6 +148,11 @@ public:
     TileLodMode tileLodMode;
 
     gfx::ScissorRect scissorRect;
+
+    // letsgothru/terrain-3d render-in-place draping: when set, draped layers are
+    // being rendered into this terrain tile's offscreen FBO; getTileMatrix uses
+    // it to produce the per-tile RTT matrix. Unset during normal screen passes.
+    std::optional<UnwrappedTileID> terrainTileID;
 };
 
 } // namespace mbgl

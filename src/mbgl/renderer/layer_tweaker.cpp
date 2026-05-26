@@ -46,6 +46,11 @@ mat4 getTerrainRttPosMatrix(const UnwrappedTileID& tileID, const UnwrappedTileID
         matrix::translate(terrainRttPosMatrix, terrainRttPosMatrix, dx * size, dy * size, 0);
         matrix::scale(terrainRttPosMatrix, terrainRttPosMatrix, 1.0 / (1 << dz), 1.0 / (1 << dz), 0);
     }
+    // letsgothru/terrain-3d: matrix::ortho() is GL-convention and maps the z=0
+    // draped geometry to clip z = -1. Metal/Vulkan/WebGPU clip z to [0,1], so
+    // every fragment would be discarded. Draped fills are flat (z=0) and depth
+    // is disabled in the RTT, so force the z translation to 0 → clip z = 0.
+    terrainRttPosMatrix[14] = 0.0;
     return terrainRttPosMatrix;
 }
 
@@ -58,6 +63,14 @@ mat4 LayerTweaker::getTileMatrix(const UnwrappedTileID& tileID,
                                  const gfx::Drawable& drawable,
                                  bool aligned,
                                  bool renderToTerrain) {
+    // letsgothru/terrain-3d render-in-place draping: when rendering into a
+    // specific terrain tile's offscreen FBO, use that tile directly. Source
+    // tiles that don't overlap it fall through to a zero matrix (default mat4)
+    // and are naturally culled, so every draped drawable can be rendered into
+    // every FBO and only the overlapping ones survive.
+    if (renderToTerrain && parameters.terrainTileID) {
+        return getTerrainRttPosMatrix(tileID, *parameters.terrainTileID);
+    }
     std::optional<UnwrappedTileID> terrainTileID;
     if (renderToTerrain && parameters.texturePool.getRenderTargetAncestorOrDescendant(tileID, terrainTileID)) {
         return getTerrainRttPosMatrix(tileID, *terrainTileID);

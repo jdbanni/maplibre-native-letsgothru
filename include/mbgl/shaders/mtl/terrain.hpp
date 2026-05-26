@@ -152,7 +152,11 @@ half4 fragment fragmentMain(FragmentStage in [[stage_in]],
     // --- Surface colour ---------------------------------------------------
     // Sample the draped basemap (render-to-texture). Y is flipped to match the
     // GL convention used when populating the FBO.
-    float4 mapColor = mapTexture.sample(mapSampler, float2(in.uv.x, 1.0 - in.uv.y));
+    // letsgothru/terrain-3d: sample the RTT at uv directly (no Y-flip). The
+    // draped fills are placed into the FBO by getTerrainRttPosMatrix with the
+    // same orientation the mesh uses; the previous `1.0 - uv.y` sampled the
+    // vertically-mirrored row, so the mesh read background instead of the fills.
+    float4 mapColor = mapTexture.sample(mapSampler, float2(in.uv.x, in.uv.y));
 
     float3 base;
     if (mapColor.a > 0.01) {
