@@ -89,7 +89,25 @@ The `Terrain drawable skipped: ... hasPass=0` log lines are benign — that's th
 opaque pass correctly skipping the translucent terrain drawable; it draws in
 the translucent pass.
 
+### Hillshade (DEM-gradient lighting)
+
+Replaced the Phase 3 "soft elevation tint" with a real hillshade computed in the
+terrain fragment shader (`include/mbgl/shaders/mtl/terrain.hpp`). The DEM
+texture is already bound to both stages (`mtl/texture2d.cpp:274`), so the
+fragment stage samples the four neighbouring DEM texels, decodes Terrarium
+elevation, estimates the surface normal, and lights it with a fixed NW source
+(cartographic convention). The vertical scale folds in `props.exaggeration` so
+shading tracks the geometric relief. Applied to both the draped-basemap path
+and the elevation-ramp fallback; removed the debug grid lines.
+
+This is the main "see the 3D better" fix — relief now reads clearly even where
+the draped basemap is near-uniform (the Snowdonia cream basemap). Tunables:
+`zScale` (0.04) and `lightDir`. See the refreshed `RENDERED-continuous-*.png`.
+
 ### Files touched, Phase 4
+
+- `include/mbgl/shaders/mtl/terrain.hpp` — DEM-gradient hillshade in the
+  fragment shader (replaces the soft elevation tint).
 
 - `src/mbgl/renderer/render_terrain.cpp` — incremental terrain update
   (create-on-first-sight + evict + per-frame RTT-texture rebind); removed the

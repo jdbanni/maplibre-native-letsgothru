@@ -112,52 +112,64 @@ FragmentStage vertex vertexMain(thread const VertexStage vertx [[stage_in]],
     };
 }
 
+// letsgothru/terrain-3d: decode one Terrarium DEM sample (normalized [0,1]
+// RGBA) to elevation in metres. Mirrors the vertex-stage decode.
+static inline float lgtDecodeTerrarium(float4 s) {
+    return (s.r * 255.0 * 256.0 + s.g * 255.0 + s.b * 255.0 / 256.0) - 32768.0;
+}
+
 half4 fragment fragmentMain(FragmentStage in [[stage_in]],
                             device const TerrainEvaluatedPropsUBO& props [[buffer(idTerrainEvaluatedPropsUBO)]],
+                            texture2d<float, access::sample> demTexture [[texture(0)]],
+                            sampler demSampler [[sampler(0)]],
                             texture2d<float, access::sample> mapTexture [[texture(1)]],
                             sampler mapSampler [[sampler(1)]]) {
 #if defined(OVERDRAW_INSPECTOR)
     return half4(1.0);
 #endif
 
-    // Sample the map texture (render-to-texture output) for the surface color
-    // Note: Y-coordinate is flipped (1.0 - y) to match OpenGL convention
+    // --- Hillshade from the DEM gradient ---------------------------------
+    // Estimate the surface normal from the elevation of the four neighbouring
+    // DEM texels, then light it with a fixed directional source. This makes the
+    // 3D relief read clearly even where the draped basemap is near-uniform.
+    const float2 texel = float2(1.0 / float(demTexture.get_width()),
+                                1.0 / float(demTexture.get_height()));
+    const float hL = lgtDecodeTerrarium(demTexture.sample(demSampler, in.uv - float2(texel.x, 0.0)));
+    const float hR = lgtDecodeTerrarium(demTexture.sample(demSampler, in.uv + float2(texel.x, 0.0)));
+    const float hD = lgtDecodeTerrarium(demTexture.sample(demSampler, in.uv - float2(0.0, texel.y)));
+    const float hU = lgtDecodeTerrarium(demTexture.sample(demSampler, in.uv + float2(0.0, texel.y)));
+
+    // Vertical scale relative to horizontal texel spacing; folded with the
+    // terrain exaggeration so the shading tracks the geometric relief.
+    const float zScale = 0.04 * max(props.exaggeration, 0.1);
+    const float3 normal = normalize(float3((hL - hR) * zScale, (hD - hU) * zScale, 1.0));
+    // Light from the NW, moderately high — the cartographic hillshade convention.
+    const float3 lightDir = normalize(float3(-0.5, 0.5, 0.7));
+    const float diffuse = saturate(dot(normal, lightDir));
+    // Ambient floor so shadowed faces keep some of the surface colour.
+    const float shade = 0.5 + 0.55 * diffuse;
+
+    // --- Surface colour ---------------------------------------------------
+    // Sample the draped basemap (render-to-texture). Y is flipped to match the
+    // GL convention used when populating the FBO.
     float4 mapColor = mapTexture.sample(mapSampler, float2(in.uv.x, 1.0 - in.uv.y));
 
-    // If map texture has valid data, use it; otherwise fall back to elevation-based coloring
-    // Check if alpha is > 0 to detect valid map data
+    float3 base;
     if (mapColor.a > 0.01) {
-        // letsgothru/terrain-3d: brighten by elevation so the relief shape is
-        // visible on a near-uniform basemap. The mesh is already elevated in
-        // the vertex stage; this just bakes a soft elevation tint into the
-        // surface color so flat-lit fragments don't hide the geometry.
-        // A proper hillshade (computed from DEM gradient + light direction)
-        // is a follow-up.
-        const float relief = clamp(in.elevationMeters / 1500.0, -0.4, 0.6);
-        const float3 shaded = float3(mapColor.rgb) * (1.0 + relief * 0.6);
-        return half4(half3(shaded), 1.0);
-    }
-
-    // Fallback: elevation-based color gradient for debugging
-    float elevation = in.elevation;
-    float normalizedElevation = clamp((elevation - 500.0) / 3500.0, 0.0, 1.0);
-
-    float3 color;
-    if (normalizedElevation < 0.33) {
-        float t = normalizedElevation / 0.33;
-        color = mix(float3(0.2, 0.4, 0.8), float3(0.3, 0.7, 0.3), t);
-    } else if (normalizedElevation < 0.66) {
-        float t = (normalizedElevation - 0.33) / 0.33;
-        color = mix(float3(0.3, 0.7, 0.3), float3(0.6, 0.5, 0.3), t);
+        base = float3(mapColor.rgb);
     } else {
-        float t = (normalizedElevation - 0.66) / 0.34;
-        color = mix(float3(0.6, 0.5, 0.3), float3(0.95, 0.95, 0.95), t);
+        // Fallback elevation ramp for when no basemap has been draped yet.
+        const float n = clamp((in.elevation - 500.0) / 3500.0, 0.0, 1.0);
+        if (n < 0.33) {
+            base = mix(float3(0.2, 0.4, 0.8), float3(0.3, 0.7, 0.3), n / 0.33);
+        } else if (n < 0.66) {
+            base = mix(float3(0.3, 0.7, 0.3), float3(0.6, 0.5, 0.3), (n - 0.33) / 0.33);
+        } else {
+            base = mix(float3(0.6, 0.5, 0.3), float3(0.95, 0.95, 0.95), (n - 0.66) / 0.34);
+        }
     }
 
-    float gridLine = step(0.98, fract(in.uv.x * 4.0)) + step(0.98, fract(in.uv.y * 4.0));
-    color = mix(color, float3(1.0, 1.0, 1.0), gridLine * 0.5);
-
-    return half4(half3(color), 1.0);
+    return half4(half3(base * shade), 1.0);
 }
 )";
 };
