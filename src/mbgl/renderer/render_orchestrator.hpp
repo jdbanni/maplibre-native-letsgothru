@@ -250,6 +250,11 @@ private:
     LayerGroupMap layerGroupsByLayerIndex;
 
     std::vector<RenderTargetPtr> renderTargets;
+    // letsgothru/terrain-3d: the per-frame TexturePool render targets added via
+    // addRenderTargets(). Tracked so the previous frame's can be removed from
+    // renderTargets before adding the current frame's — otherwise they leak
+    // (quadratic per-frame cost) since the pool recreates them every frame.
+    std::vector<RenderTargetPtr> poolRenderTargets;
     RenderItem::DebugLayerGroupMap debugLayerGroups;
 };
 

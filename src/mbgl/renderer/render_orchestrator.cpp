@@ -1044,11 +1044,26 @@ bool RenderOrchestrator::removeRenderTarget(const RenderTargetPtr& renderTarget)
 }
 
 void RenderOrchestrator::addRenderTargets(const TexturePool& texturePool) {
+    // The TexturePool is rebuilt every frame, so its render targets are new
+    // objects each frame. Remove the previous frame's pool targets before
+    // adding the current frame's; otherwise renderTargets grows without bound
+    // (quadratic per-frame work + GPU memory leak in continuous mode). Targets
+    // added via addRenderTarget()/removeRenderTarget() (e.g. hillshade) are
+    // managed separately and left untouched.
+    for (const auto& stale : poolRenderTargets) {
+        auto it = std::find(renderTargets.begin(), renderTargets.end(), stale);
+        if (it != renderTargets.end()) {
+            renderTargets.erase(it);
+        }
+    }
+    poolRenderTargets.clear();
+
     texturePool.visitRenderTargets([&](const RenderTargetPtr& renderTarget) {
         auto it = std::find(renderTargets.begin(), renderTargets.end(), renderTarget);
         if (it == renderTargets.end()) {
             renderTargets.emplace_back(renderTarget);
         }
+        poolRenderTargets.emplace_back(renderTarget);
     });
 }
 

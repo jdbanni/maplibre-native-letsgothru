@@ -173,8 +173,9 @@ private:
     // Terrain layer tweaker for UBO updates
     std::unique_ptr<TerrainLayerTweaker> tweaker;
 
-    // Track which tiles have terrain drawables
-    std::unordered_map<OverscaledTileID, bool> tilesWithDrawables;
+    // Track which tiles have terrain drawables, mapping each to the (layer-group
+    // owned) drawable so its per-frame RTT texture can be re-pointed each frame.
+    std::unordered_map<OverscaledTileID, gfx::Drawable*> tilesWithDrawables;
 
     // Mesh resolution (vertices per side)
     static constexpr size_t MESH_SIZE = 128;

@@ -5,6 +5,111 @@ plus globe, ship a custom XCFramework + RN binding for letsgothru/apps/mobile.
 
 iOS is the primary target; macOS is for dev iteration only.
 
+## Phase 4 (2026-05-26) — continuous-mode terrain + interactive test client
+
+Goal this run: finish the remainder of Track A (make terrain work in a *live,
+continuously-rendered* map, not just single-frame static output) and stand up
+an interactive test client that uses our styles/maps. Both done.
+
+### Test client (was "Track B") — use the existing GLFW client
+
+No need to build a new client. `mbgl-glfw` (`platform/glfw/`) already exists,
+builds with the **same `macos-metal` preset** we use for `mbgl-render`, takes a
+custom style on the command line, and renders in `MapMode::Continuous` by
+default (interactive pan/zoom/pitch).
+
+```
+cmake --build build-macos-metal --target mbgl-glfw -j8
+build-macos-metal/platform/glfw/mbgl-glfw \
+  --backend metal \
+  -s https://tiles.letsgothru.com/styles/outdoors.json \
+  -x -4.0763 -y 53.0685 -z 13 -p 60
+```
+
+`-s` accepts our remote style URL or a `file://` path. Baseline (no terrain)
+runs our Outdoors style at a stable ~100 fps. The Cocoa app
+(`platform/macos/app`, Bazel/Xcode) is the heavier option and is closer to the
+iOS SDK path — left for later.
+
+Note: the live style's **sprite endpoint returns HTTP 500**
+(`tiles.letsgothru.com` sprite URL). `mbgl-glfw` tolerates it (logs + keeps
+going); `mbgl-render` treats it as fatal in static mode. Workaround for static
+renders: drop the `sprite` key from the style. Worth fixing server-side.
+
+### Continuous-mode terrain — was catastrophically leaking, now stable
+
+Empirically reproduced the static-only assumption in the live client. Terrain
+in continuous mode did **not crash**, but frame time climbed without bound and
+memory grew:
+
+```
+BEFORE (force-rebuild every frame):
+  frame time: 5 → 60 → 240 → 330 → 404 → 452 → 499 → 562 → 656 → 701 ms ...
+  ~1.7 GB of DEM texture re-uploads in 16 frames; RSS → 1 GB+ and climbing.
+AFTER (this run's fixes):
+  frame time: 5 → 35 → 79 → 90 → 75 → 105 → 99 → 72 → 102 → 98 → 98 ms (flat band)
+  DEM uploads bounded (~81); RSS steady ~470 MB.
+```
+
+Two independent leaks, both fixed:
+
+1. **`src/mbgl/renderer/render_terrain.cpp` — per-frame "Force rebuild".**
+   The original `update()` reset the terrain layer group and cleared
+   `tilesWithDrawables` *every frame*, which recreated every DEM texture
+   (514×514 ≈ 1 MB each) and every terrain drawable per frame. Replaced with an
+   **incremental update**: build a drawable on a tile's first appearance, evict
+   drawables whose DEM tile has scrolled off (`LayerGroup::removeDrawablesIf`),
+   and — because the RTT FBO pool is legitimately rebuilt every frame — just
+   **re-point the map texture (slot 1)** on cached drawables each frame via
+   `Drawable::setTexture(tex, 1)`. `tilesWithDrawables` now maps
+   `OverscaledTileID → gfx::Drawable*` (layer-group-owned, pointer-stable).
+
+2. **`src/mbgl/renderer/render_orchestrator.cpp` — render-target accumulation.**
+   `addRenderTargets(texturePool)` appended the per-frame pool's render targets
+   into the orchestrator's persistent `renderTargets` vector, deduped by
+   pointer. Since the `TexturePool` is a per-frame stack object
+   (`renderer_impl.cpp:197`), the pointers are new every frame, so nothing
+   deduped and nothing was ever removed — `renderTargets` grew by N each frame
+   and the render pass iterated an ever-growing set (quadratic). Fixed by
+   tracking the previous frame's pool targets (`poolRenderTargets`) and removing
+   them before adding the current frame's, leaving hillshade-managed targets
+   (added via `addRenderTarget`/`removeRenderTarget`) untouched.
+
+### Visual correctness — no regression
+
+- `RENDERED-continuous-mesh-2026-05-26.png` — mesh-only style (transparent
+  background → shader elevation-gradient fallback), z12 pitch 65° bearing 20°.
+  Snowdon massif in full 3D. Equivalent to the Phase 3 `task3a-mesh` image,
+  rendered with the new incremental code.
+- `RENDERED-continuous-draped-2026-05-26.png` — full Outdoors style, z11 pitch
+  60°. Subtle elevation shading on the cream basemap (same character as Phase 3
+  `task3a-2026`).
+
+The `Terrain drawable skipped: ... hasPass=0` log lines are benign — that's the
+opaque pass correctly skipping the translucent terrain drawable; it draws in
+the translucent pass.
+
+### Files touched, Phase 4
+
+- `src/mbgl/renderer/render_terrain.cpp` — incremental terrain update
+  (create-on-first-sight + evict + per-frame RTT-texture rebind); removed the
+  force-rebuild block and the per-tile per-frame log spam.
+- `src/mbgl/renderer/render_terrain.hpp` — `tilesWithDrawables` now stores
+  `gfx::Drawable*` instead of `bool`.
+- `src/mbgl/renderer/render_orchestrator.cpp` / `.hpp` — evict previous frame's
+  pool render targets in `addRenderTargets`; added `poolRenderTargets` member.
+
+### Remaining (not blocking "prove continuous")
+
+- **Perf**: steady-state terrain frame time is ~70–105 ms (~10–14 fps) vs ~10 ms
+  for the no-terrain baseline. The cost is the per-frame fill/line RTT pass
+  (`renderer_impl.cpp:283-327` re-creates per-terrain-tile sub-groups and
+  re-renders fills into the FBOs every frame). Could be cached/dirtied when the
+  view is static. This is optimization, not correctness.
+- **DEM data refresh**: a tile that updates its DEM in place (same
+  `OverscaledTileID`, new data) keeps its first drawable. Rare; revisit if seen.
+- iOS device validation still pending (Phase 3+ list below).
+
 ## Phase 3 (2026-05-25) — Track A DONE
 
 Track A success criterion was "visible mountains" rendering Snowdonia

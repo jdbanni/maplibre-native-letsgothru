@@ -32,6 +32,7 @@
 
 #include <cmath>
 #include <cstring>
+#include <unordered_set>
 
 namespace mbgl {
 
@@ -67,18 +68,16 @@ void RenderTerrain::update(RenderOrchestrator& orchestrator,
         }
     }
 
-    // TEMP: Always rebuild to pick up latest code changes
-    // Clear and recreate layer group every time until terrain is stable
-    if (layerGroup && tilesWithDrawables.size() > 0) {
-        Log::Info(Event::Render,
-                  "Force rebuilding terrain layer group (had " + std::to_string(tilesWithDrawables.size()) +
-                      " old drawables)");
-        activateLayerGroup(false, changes); // Deactivate old layer group
-        layerGroup.reset();                 // Clear the layer group to force recreation
-        tilesWithDrawables.clear();
-    }
+    // letsgothru/terrain-3d: incremental update for continuous mode.
+    // The previous code force-rebuilt the entire terrain layer group every
+    // frame (reset layerGroup + clear tilesWithDrawables), which recreated
+    // every DEM texture and drawable per frame. In continuous mode that leaked
+    // GPU memory and drove frame time up without bound (~656 ms/frame after a
+    // few seconds; ~1.7 GB of DEM uploads in 16 frames). We now keep drawables
+    // across frames, build them only for newly-visible tiles, evict tiles that
+    // scroll off, and re-point the per-frame RTT texture (slot 1) below.
 
-    // Create layer group if we don't have one (including after rebuild)
+    // Create layer group if we don't have one
     if (!layerGroup) {
         if (auto layerGroup_ = context.createLayerGroup(TERRAIN_LAYER_INDEX, /*initialCapacity=*/1, "terrain", false)) {
             layerGroup = std::move(layerGroup_);
@@ -101,14 +100,9 @@ void RenderTerrain::update(RenderOrchestrator& orchestrator,
         return;
     }
 
-    // Get tiles from the DEM source
+    // Get tiles from the DEM source. Immutable<> is never null; an empty list
+    // is fine — eviction below will then clear any stale drawables.
     auto renderTiles = demSource->getRawRenderTiles();
-    if (renderTiles->empty()) {
-        Log::Warning(Event::Render, "Terrain DEM source has no tiles loaded yet");
-        return;
-    }
-
-    Log::Info(Event::Render, "Terrain processing " + std::to_string(renderTiles->size()) + " DEM tiles");
 
     // Cast to LayerGroup for addDrawable
     auto* lg = static_cast<LayerGroup*>(layerGroup.get());
@@ -116,26 +110,52 @@ void RenderTerrain::update(RenderOrchestrator& orchestrator,
         return;
     }
 
-    // Create terrain drawables for each DEM tile
+    // Build the set of DEM tiles currently visible this frame.
+    std::unordered_set<OverscaledTileID> presentTiles;
+    presentTiles.reserve(renderTiles->size());
+    for (const auto& renderTile : *renderTiles) {
+        presentTiles.insert(renderTile.getOverscaledTileID());
+    }
+
+    // Evict drawables whose DEM tile is no longer visible. This bounds GPU
+    // memory as the user pans/zooms in continuous mode; destroying the
+    // UniqueDrawable releases its DEM texture and geometry buffers.
+    const size_t evicted = lg->removeDrawablesIf([&](gfx::Drawable& drawable) {
+        const auto& tid = drawable.getTileID();
+        if (tid && presentTiles.count(*tid) == 0) {
+            tilesWithDrawables.erase(*tid);
+            return true;
+        }
+        return false;
+    });
+    if (evicted > 0) {
+        Log::Info(Event::Render, "Terrain evicted " + std::to_string(evicted) + " drawables for off-screen tiles");
+    }
+
+    // For each visible tile: build a drawable on first sight; otherwise just
+    // re-point its map texture (slot 1) at this frame's render-to-texture FBO,
+    // which the TexturePool recreates every frame.
     size_t newDrawables = 0;
     for (const auto& renderTile : *renderTiles) {
         const auto& tileID = renderTile.getOverscaledTileID();
 
-        Log::Info(Event::Render, "Terrain examining tile " + util::toString(tileID));
+        // This frame's RTT FBO texture for the tile (recreated per frame).
+        std::shared_ptr<gfx::Texture2D> mapTexture;
+        if (const auto& renderTarget = texturePool.getRenderTarget(renderTile.id)) {
+            mapTexture = renderTarget->getTexture();
+        }
 
-        // Skip if we already have a drawable for this tile
-        if (tilesWithDrawables.count(tileID) > 0) {
-            Log::Info(Event::Render, "Terrain tile " + util::toString(tileID) + " already has drawable, skipping");
+        // Existing drawable: rebind the per-frame RTT texture and move on.
+        if (auto it = tilesWithDrawables.find(tileID); it != tilesWithDrawables.end()) {
+            if (mapTexture && it->second) {
+                it->second->setTexture(mapTexture, 1);
+            }
             continue;
         }
 
-        // Get the underlying Tile and cast to RasterDEMTile
+        // New tile: build a drawable once its DEM data is available.
         const auto& tile = renderTile.getTile();
-        Log::Info(Event::Render,
-                  "Terrain tile " + util::toString(tileID) + " kind=" + std::to_string(static_cast<int>(tile.kind)));
-
         if (tile.kind != Tile::Kind::RasterDEM) {
-            Log::Warning(Event::Render, "Terrain tile " + util::toString(tileID) + " is not RasterDEM type");
             continue;
         }
 
@@ -144,40 +164,29 @@ void RenderTerrain::update(RenderOrchestrator& orchestrator,
             continue;
         }
 
-        // Get the HillshadeBucket from the DEM tile
         auto* hillshadeBucket = demTile->getBucket();
         if (!hillshadeBucket) {
-            Log::Info(Event::Render, "Terrain tile " + util::toString(tileID) + " has no bucket yet (still loading)");
-            continue;
+            continue; // still loading
         }
 
-        // Get DEM data from the bucket
         const auto& demData = hillshadeBucket->getDEMData();
         auto imagePtr = demData.getImagePtr();
         if (!imagePtr || imagePtr->size.isEmpty()) {
-            Log::Warning(Event::Render, "Terrain tile " + util::toString(tileID) + " has empty DEM data");
             continue;
         }
 
-        Log::Info(Event::Render,
-                  "Terrain creating texture for tile " + util::toString(tileID) + " (DEM size: " +
-                      std::to_string(imagePtr->size.width) + "x" + std::to_string(imagePtr->size.height) + ")");
-
-        // Create DEM texture from the data
         auto demTexture = createDEMTexture(context, demData);
         if (!demTexture) {
             Log::Warning(Event::Render, "Failed to create DEM texture for tile " + util::toString(tileID));
             continue;
         }
 
-        // Create terrain drawable for this tile
-        auto drawable = createDrawableForTile(
-            context, shaders, tileID, demTexture, texturePool.getRenderTarget(renderTile.id)->getTexture());
+        auto drawable = createDrawableForTile(context, shaders, tileID, demTexture, mapTexture);
         if (drawable) {
+            gfx::Drawable* raw = drawable.get();
             lg->addDrawable(std::move(drawable));
-            tilesWithDrawables[tileID] = true;
+            tilesWithDrawables[tileID] = raw;
             newDrawables++;
-            Log::Info(Event::Render, "Created terrain drawable for tile " + util::toString(tileID));
         }
     }
 
