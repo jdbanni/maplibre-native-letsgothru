@@ -170,3 +170,44 @@ shared per-drawable UBO per target also risks a write-ordering race (retained
 single-UBO vs immediate-mode). Once the offscreen-binding blocker is fixed,
 either (a) give drawables per-target UBO sets, or (b) filter source tiles to
 their overlapping terrain tile before rendering (GL JS's proxy mapping).
+
+## Deep-dive findings (2026-05-26, session 2)
+
+Two distinct bugs, isolated empirically with shader hacks (magenta FBO clear,
+forced-red fragment, matrix-bypass vertex):
+
+1. **Stencil culling — FOUND & FIXED.** The draped fill/line drawables were
+   being stencil-culled in the offscreen FBO: their source-tile clip masks are
+   projected in screen space and are meaningless in the per-tile FBO. The move
+   approach disabled stencil per-drawable; render-in-place did not. Proof:
+   matrix-bypass + forced-red rendered **nothing** with stencil on, and **solid
+   red** once stencil was disabled on the draped drawables. Fix kept in
+   `RenderTarget::render` (terrain branch): `setEnableStencil(false)` on the
+   draped groups' drawables before rendering them into the FBO.
+
+2. **Offscreen matrix delivery — STILL OPEN.** With stencil off:
+   - matrix-bypass (map tile coords straight to NDC) + forced-red → **red**
+     fills the terrain. So the offscreen draw pipeline (geometry + fragment)
+     works once stencil is off.
+   - the **real** `drawable.matrix` + forced-red → **nothing**, at z12 (dz=0,
+     full-FBO mapping) *and* z14 (dz=2, cell mapping). So `drawable.matrix` as
+     read by the fill vertex maps geometry off-screen in the offscreen pass.
+   - The tweaker computes a correct on-screen RTT matrix (logged), buffers are
+     reallocated on update (no in-place race, `buffer_resource.cpp:141`), and
+     the *same* per-drawable UBO binding renders correctly on screen in 2D mode.
+     So the vertex is reading a wrong matrix specifically in the offscreen pass.
+
+   This is the remaining blocker and is common to both the move and
+   render-in-place approaches — it is the wall the upstream PR hit.
+
+### Next step (needs a GPU capture)
+
+Static source reading has bottomed out. Capture a Metal frame (Xcode, via the
+`macos-metal-xcode` preset) on the terrain RTT pass and inspect, for a fill
+draw: the bound buffer at `idFillDrawableUBO`, the `idGlobalUBOIndex` value, and
+the actual `FillDrawableUBO.matrix` the vertex receives vs what the tweaker
+wrote. That will show whether it's a stale/zero buffer, a wrong `uboIndex`, or a
+binding that the offscreen encoder drops.
+
+Current working tree holds the render-in-place prototype + the stencil fix
+(uncommitted); terrain relief still renders, basemap drape pending bug #2.
