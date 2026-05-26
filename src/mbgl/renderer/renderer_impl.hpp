@@ -1,6 +1,7 @@
 #pragma once
 
 #include <mbgl/renderer/render_orchestrator.hpp>
+#include <mbgl/renderer/texture_pool.hpp>
 #include <mbgl/gfx/context_observer.hpp>
 
 #if MLN_RENDER_BACKEND_METAL
@@ -65,6 +66,12 @@ private:
     RenderState renderState = RenderState::Never;
 
     uint64_t frameCount = 0;
+
+    // letsgothru/terrain-3d: persistent pool of terrain render-to-texture FBOs,
+    // keyed by terrain tile and reused across frames. Their draped content is
+    // camera-independent, so panning reuses them instead of re-rendering +
+    // GPU-syncing each one every frame.
+    TexturePool texturePool{512};
 
 #if MLN_RENDER_BACKEND_METAL
     mtl::MTLCaptureScopePtr commandCaptureScope;

@@ -87,6 +87,14 @@ void RenderTarget::upload(gfx::UploadPass& uploadPass) {
 }
 
 void RenderTarget::render(RenderOrchestrator& orchestrator, const RenderTree& renderTree, PaintParameters& parameters) {
+    // letsgothru/terrain-3d: skip re-rendering a terrain RTT whose draped content
+    // is unchanged since it was last rendered. The drape is camera-independent,
+    // so panning over the same region reuses the cached FBO texture and avoids
+    // the per-RTT commit()+waitUntilCompleted() GPU stall. (Hillshade RTTs have
+    // no terrainTileID and always render, as before.)
+    if (terrainTileID && pendingFingerprint == renderedFingerprint) {
+        return;
+    }
     // letsgothru terrain: explicitly clear depth to 1.0 (far plane) and stencil to 0
     // so fill drawables that use depth/stencil tests start each frame from a sane state.
     // (The offscreen texture only actually has these attachments if it was created with
@@ -192,6 +200,10 @@ void RenderTarget::render(RenderOrchestrator& orchestrator, const RenderTree& re
 
     parameters.renderPass.reset();
     parameters.encoder->present(*offscreenTexture);
+
+    // letsgothru/terrain-3d: record the content we just rendered, so an unchanged
+    // fingerprint next frame lets us reuse this FBO.
+    renderedFingerprint = pendingFingerprint;
 
     parameters.scissorRect = prevScissorRect;
 }

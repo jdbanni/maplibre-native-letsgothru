@@ -9,6 +9,12 @@ TexturePool::TexturePool(uint32_t tilesize)
 TexturePool::~TexturePool() {}
 
 void TexturePool::createRenderTarget(gfx::Context& context, const UnwrappedTileID& id, const Color& backgroundColor) {
+    // letsgothru/terrain-3d: the pool now persists across frames. Reuse an
+    // existing FBO for this terrain tile (keeps its rendered drape so panning
+    // can reuse it); only allocate when the tile is newly visible.
+    if (renderTargets.contains(id)) {
+        return;
+    }
     // letsgothru terrain: construct with depthStencil=true so the FBO has
     // depth+stencil attachments. Without these, fill/line drawables with
     // enableDepth=true are silently dropped by Metal pipeline validation and
@@ -27,6 +33,17 @@ void TexturePool::createRenderTarget(gfx::Context& context, const UnwrappedTileI
 
 std::shared_ptr<RenderTarget> TexturePool::getRenderTarget(const UnwrappedTileID& id) const {
     return renderTargets.contains(id) ? renderTargets.at(id) : nullptr;
+}
+
+void TexturePool::evictExcept(const std::set<UnwrappedTileID>& keep) {
+    // letsgothru/terrain-3d: drop FBOs for terrain tiles no longer visible.
+    for (auto it = renderTargets.begin(); it != renderTargets.end();) {
+        if (keep.count(it->first) == 0) {
+            it = renderTargets.erase(it);
+        } else {
+            ++it;
+        }
+    }
 }
 
 std::shared_ptr<RenderTarget> TexturePool::getRenderTargetAncestorOrDescendant(

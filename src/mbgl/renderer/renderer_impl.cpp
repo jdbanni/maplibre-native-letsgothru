@@ -193,8 +193,8 @@ void Renderer::Impl::render(const RenderTree& renderTree, const std::shared_ptr<
 
     observer->onWillStartRenderingFrame();
 
-    const uint16_t tilesize = 512; // TODO;
-    TexturePool texturePool(tilesize);
+    // letsgothru/terrain-3d: texturePool is now a persistent member, reused
+    // across frames (see reconcile + fingerprint logic below).
 
     const TransformState& state = renderTreeParameters.transformParams.state;
     const Size& size = staticData->backendSize;
@@ -237,14 +237,20 @@ void Renderer::Impl::render(const RenderTree& renderTree, const std::shared_ptr<
 
     const auto& layerRenderItems = renderTree.getLayerRenderItemMap();
 
+    // letsgothru/terrain-3d: reconcile the persistent RTT pool against the
+    // currently-visible terrain tiles -- reuse existing FBOs, allocate newly
+    // visible ones, evict those no longer in view.
+    std::set<UnwrappedTileID> currentTerrainTiles;
     if (auto* terrain = orchestrator.getRenderTerrain()) {
-        RenderSource* demSource = orchestrator.getRenderSource(terrain->getSourceID());
-        auto renderTiles = demSource->getRawRenderTiles();
-
-        for (const auto& renderTile : *renderTiles) {
-            texturePool.createRenderTarget(context, renderTile.id, renderTreeParameters.backgroundColor);
+        if (RenderSource* demSource = orchestrator.getRenderSource(terrain->getSourceID())) {
+            auto renderTiles = demSource->getRawRenderTiles();
+            for (const auto& renderTile : *renderTiles) {
+                texturePool.createRenderTarget(context, renderTile.id, renderTreeParameters.backgroundColor);
+                currentTerrainTiles.insert(renderTile.id);
+            }
         }
     }
+    texturePool.evictExcept(currentTerrainTiles);
 
     // - UPLOAD PASS -------------------------------------------------------------------------------
     // Uploads all required buffers and images before we do any actual rendering.
@@ -280,12 +286,34 @@ void Renderer::Impl::render(const RenderTree& renderTree, const std::shared_ptr<
 
     orchestrator.processChanges();
     orchestrator.addRenderTargets(texturePool);
-    // letsgothru/terrain-3d render-in-place draping (PROTOTYPE): the original PR
-    // relocated draped drawables into per-terrain-tile RTT sub-groups here, which
-    // broke their per-draw uniform binding (fills rasterised nothing). We no
-    // longer move drawables. Instead RenderTarget::render draws the draped layer
-    // groups in place with a per-tile RTT matrix, and the screen passes below
-    // skip draped groups. See docs/letsgothru/TERRAIN-DRAPING-DESIGN-2026-05-26.md.
+    // letsgothru/terrain-3d render-in-place draping: the original PR relocated
+    // draped drawables into per-terrain-tile RTT sub-groups here, which broke
+    // their per-draw uniform binding (fills rasterised nothing). We no longer
+    // move drawables. Instead RenderTarget::render draws the draped layer groups
+    // in place with a per-tile RTT matrix, and the screen passes below skip
+    // draped groups. See docs/letsgothru/TERRAIN-DRAPING-DESIGN-2026-05-26.md.
+
+    // letsgothru/terrain-3d: fingerprint each terrain RTT from the draped
+    // drawables overlapping it. RenderTarget::render reuses an FBO whose
+    // fingerprint is unchanged since last render (camera-independent drape),
+    // skipping the per-RTT GPU sync -- the panning fast path.
+    texturePool.visitRenderTargets([](std::shared_ptr<RenderTarget>& rt) { rt->resetFingerprint(); });
+    orchestrator.visitLayerGroups([&](LayerGroupBase& layerGroupBase) {
+        if (!layerGroupBase.shouldRenderToTerrain() ||
+            layerGroupBase.getType() != LayerGroupBase::Type::TileLayerGroup) {
+            return;
+        }
+        static_cast<TileLayerGroup&>(layerGroupBase).visitDrawables([&](gfx::Drawable& drawable) {
+            if (!drawable.getTileID()) {
+                return;
+            }
+            std::optional<UnwrappedTileID> terrainTileID;
+            if (auto rt = texturePool.getRenderTargetAncestorOrDescendant(drawable.getTileID()->toUnwrapped(),
+                                                                          terrainTileID)) {
+                rt->addFingerprint(std::hash<OverscaledTileID>()(*drawable.getTileID()));
+            }
+        });
+    });
 
     // Upload layer groups
     {

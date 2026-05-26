@@ -96,6 +96,12 @@ public:
     /// letsgothru/terrain-3d render-in-place: the terrain tile this FBO drapes.
     void setTerrainTileID(const UnwrappedTileID& id) { terrainTileID = id; }
 
+    /// letsgothru/terrain-3d: per-frame content fingerprint for dirty-tracking.
+    /// The draped content is camera-independent, so an unchanged fingerprint
+    /// means the FBO can be reused (skip re-render + the per-RTT GPU sync).
+    void resetFingerprint() { pendingFingerprint = 0; }
+    void addFingerprint(std::size_t h) { pendingFingerprint = pendingFingerprint * 1000003u + (h + 1); }
+
 protected:
     gfx::Context& context;
     std::unique_ptr<gfx::OffscreenTexture> offscreenTexture;
@@ -103,6 +109,8 @@ protected:
     LayerGroupMap layerGroupsByLayerIndex;
     Color backgroundColor;
     std::optional<UnwrappedTileID> terrainTileID;
+    std::size_t pendingFingerprint = 0;
+    std::size_t renderedFingerprint = static_cast<std::size_t>(-1); // sentinel: never rendered
 };
 
 } // namespace mbgl

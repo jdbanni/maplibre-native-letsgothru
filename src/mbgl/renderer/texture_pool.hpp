@@ -3,6 +3,7 @@
 #include <mbgl/tile/tile_id.hpp>
 #include <mbgl/renderer/render_target.hpp>
 #include <optional>
+#include <set>
 
 namespace mbgl {
 class TexturePool {
@@ -14,6 +15,8 @@ public:
     std::shared_ptr<RenderTarget> getRenderTargetAncestorOrDescendant(
         const UnwrappedTileID& id, std::optional<UnwrappedTileID>& terrainTileID) const;
     void createRenderTarget(gfx::Context& context, const UnwrappedTileID& id, const Color& backgroundColor);
+    /// letsgothru/terrain-3d: drop render targets whose tile is not in `keep`.
+    void evictExcept(const std::set<UnwrappedTileID>& keep);
 
     template <typename Func /* void(std::shared_ptr<RenderTarget>&) */>
     void visitRenderTargets(Func f) {
