@@ -101,18 +101,20 @@ void SymbolLayerTweaker::execute(LayerGroupBase& layerGroup, const PaintParamete
     const auto isScreenSpace = screenSpaceProp.isConstant() ? screenSpaceProp.asConstant()
                                                             : SymbolScreenSpace::defaultValue();
 
-    // letsgothru/terrain-3d: metres->tile-units factor (matches TerrainLayerTweaker)
-    // so labels are raised onto the terrain surface. 0 when no terrain active.
-    // MLN_NO_SYMBOL_ELEVATION disables the lift (debug A/B aid).
+    // letsgothru/terrain-3d: per-anchor terrain elevation. The symbol vertex shader
+    // samples the bound DEM texture and converts metres to tile units with this
+    // factor (metres * exaggeration * metersToTileUnits), matching TerrainLayerTweaker
+    // so labels track the mesh exactly. MLN_NO_SYMBOL_ELEVATION disables it (A/B aid).
     const bool symbolElevationEnabled = parameters.terrain && !std::getenv("MLN_NO_SYMBOL_ELEVATION");
-    float metersToTileUnits = 0.0f;
-    if (parameters.terrain) {
+    float metersToTileUnitsXExag = 0.0f;
+    if (symbolElevationEnabled) {
         constexpr float EXTENT_F = 8192.0f;
         constexpr float EARTH_CIRCUMFERENCE_M = 40075016.686f;
         const float latRad = static_cast<float>(state.getLatLng().latitude() * M_PI / 180.0);
         const float cosLat = std::max(0.05f, std::cos(latRad));
-        metersToTileUnits = std::exp2(static_cast<float>(state.getZoom())) * EXTENT_F /
-                            (cosLat * EARTH_CIRCUMFERENCE_M);
+        const float metersToTileUnits = std::exp2(static_cast<float>(state.getZoom())) * EXTENT_F /
+                                        (cosLat * EARTH_CIRCUMFERENCE_M);
+        metersToTileUnitsXExag = metersToTileUnits * parameters.terrain->getExaggeration();
     }
 
     visitLayerGroupDrawables(layerGroup, [&](gfx::Drawable& drawable) {
@@ -122,12 +124,15 @@ void SymbolLayerTweaker::execute(LayerGroupBase& layerGroup, const PaintParamete
 
         const auto tileID = drawable.getTileID()->toUnwrapped();
 
-        // letsgothru/terrain-3d: tile-centre elevation (tile units) to lift labels
-        // onto the terrain. Approximate (per-tile, not per-anchor) for now.
-        const float terrainElevation =
-            symbolElevationEnabled
-                ? parameters.terrain->getElevationWithExaggeration(tileID, 4096.0f, 4096.0f) * metersToTileUnits
-                : 0.0f;
+        // letsgothru/terrain-3d: bind the covering DEM texture so the shader can
+        // sample per-anchor elevation. has_terrain stays 0 if none covers this tile.
+        std::optional<RenderTerrain::DEMTextureRef> demRef;
+        if (symbolElevationEnabled) {
+            demRef = parameters.terrain->getDEMTextureFor(tileID);
+            if (demRef) {
+                drawable.setTexture(demRef->texture, idSymbolDEMTexture);
+            }
+        }
 
         const auto& symbolData = static_cast<gfx::SymbolDrawableData&>(*drawable.getData());
         const auto isText = (symbolData.symbolType == SymbolType::Text);
@@ -216,7 +221,12 @@ void SymbolLayerTweaker::execute(LayerGroupBase& layerGroup, const PaintParamete
             .opacity_t = getInterpFactor<TextOpacity, IconOpacity, 0>(paintProperties, isText, zoom),
             .halo_width_t = getInterpFactor<TextHaloWidth, IconHaloWidth, 0>(paintProperties, isText, zoom),
             .halo_blur_t = getInterpFactor<TextHaloBlur, IconHaloBlur, 0>(paintProperties, isText, zoom),
-            .terrain_elevation = terrainElevation,
+            .has_terrain = demRef ? 1 : 0,
+            .meters_to_tile_x_exag = metersToTileUnitsXExag,
+            .dem_scale = demRef ? demRef->demScale : 1.0f,
+            .dem_tl = demRef ? std::array<float, 2>{demRef->demTlX, demRef->demTlY} : std::array<float, 2>{0.0f, 0.0f},
+            .pad_t1 = 0.0f,
+            .pad_t2 = 0.0f,
         };
 
 #if MLN_UBO_CONSOLIDATION

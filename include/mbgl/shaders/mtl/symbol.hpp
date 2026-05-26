@@ -41,12 +41,18 @@ struct alignas(16) SymbolDrawableUBO {
     /* 252 */ float halo_width_t;
     /* 256 */ float halo_blur_t;
 
-    // letsgothru/terrain-3d: tile elevation in tile-units (metres * exaggeration *
-    // metersToTileUnits), 0 when no terrain. Raises labels onto the surface.
-    /* 260 */ float terrain_elevation;
-    /* 264 */
+    // letsgothru/terrain-3d: per-anchor DEM elevation (see symbol_layer_ubo.hpp).
+    // has_terrain != 0 -> sample DEM at dem_tl + (a_pos/EXTENT)*dem_scale, decode
+    // Terrarium metres, * meters_to_tile_x_exag -> tile units; lift + set depth.
+    /* 260 */ /*bool*/ int has_terrain;
+    /* 264 */ float meters_to_tile_x_exag;
+    /* 268 */ float dem_scale;
+    /* 272 */ float2 dem_tl;
+    /* 280 */ float pad_t1;
+    /* 284 */ float pad_t2;
+    /* 288 */
 };
-static_assert(sizeof(SymbolDrawableUBO) == 17 * 16, "wrong size");
+static_assert(sizeof(SymbolDrawableUBO) == 18 * 16, "wrong size");
 
 struct alignas(16) SymbolTilePropsUBO {
     /*  0 */ /*bool*/ int is_text;
@@ -87,7 +93,7 @@ struct ShaderSource<BuiltIn::SymbolIconShader, gfx::Backend::Type::Metal> {
 
     static const std::array<AttributeInfo, 6> attributes;
     static constexpr std::array<AttributeInfo, 0> instanceAttributes{};
-    static const std::array<TextureInfo, 1> textures;
+    static const std::array<TextureInfo, 2> textures;
 
     static constexpr auto prelude = symbolShaderPrelude;
     static constexpr auto source = R"(
@@ -120,7 +126,9 @@ struct FragmentStage {
 FragmentStage vertex vertexMain(thread const VertexStage vertx [[stage_in]],
                                 device const GlobalPaintParamsUBO& paintParams [[buffer(idGlobalPaintParamsUBO)]],
                                 device const uint32_t& uboIndex [[buffer(idGlobalUBOIndex)]],
-                                device const SymbolDrawableUBO* drawableVector [[buffer(idSymbolDrawableUBO)]]) {
+                                device const SymbolDrawableUBO* drawableVector [[buffer(idSymbolDrawableUBO)]],
+                                texture2d<float, access::sample> dem_image [[texture(2)]],
+                                sampler dem_sampler [[sampler(2)]]) {
 
     device const SymbolDrawableUBO& drawable = drawableVector[uboIndex];
 
@@ -200,13 +208,21 @@ FragmentStage vertex vertexMain(thread const VertexStage vertx [[stage_in]],
     const float2 pos0 = projected_pos.xy / projected_pos.w;
     const float2 posOffset = a_offset * max(a_minFontScale, fontScale) / 32.0 + a_pxoffset / 16.0;
     const float4 rawPosition = drawable.coord_matrix * float4(pos0 + rotation_matrix * posOffset, 0.0, 1.0);
-    // letsgothru/terrain-3d: raise the label onto the terrain by the screen-space
-    // projection of the anchor's elevation (drawable.terrain_elevation, tile units).
+    // letsgothru/terrain-3d: per-anchor elevation. Sample the bound DEM texture at
+    // the anchor, decode Terrarium metres, scale to tile units, then (a) lift the
+    // label up the screen onto the surface and (b) carry the elevated anchor's
+    // depth so terrain in front of it occludes the label.
     float4 position = rawPosition;
-    if (drawable.terrain_elevation != 0.0) {
+    if (drawable.has_terrain != 0) {
+        const float2 demUV = drawable.dem_tl + (a_pos / 8192.0) * drawable.dem_scale;
+        const float4 demSample = dem_image.sample(dem_sampler, demUV);
+        const float demMeters =
+            (demSample.r * 255.0 * 256.0 + demSample.g * 255.0 + demSample.b * 255.0 / 256.0) - 32768.0;
+        const float elev = demMeters * drawable.meters_to_tile_x_exag;
         const float4 flatA = drawable.matrix * float4(a_pos, 0.0, 1.0);
-        const float4 raisedA = drawable.matrix * float4(a_pos, drawable.terrain_elevation, 1.0);
+        const float4 raisedA = drawable.matrix * float4(a_pos, elev, 1.0);
         position.xy += (raisedA.xy / raisedA.w - flatA.xy / flatA.w) * rawPosition.w;
+        position.z = (raisedA.z / raisedA.w) * position.w;
     }
 
     return {
@@ -251,7 +267,7 @@ struct ShaderSource<BuiltIn::SymbolSDFShader, gfx::Backend::Type::Metal> {
 
     static const std::array<AttributeInfo, 10> attributes;
     static constexpr std::array<AttributeInfo, 0> instanceAttributes{};
-    static const std::array<TextureInfo, 1> textures;
+    static const std::array<TextureInfo, 2> textures;
 
     static constexpr auto prelude = symbolShaderPrelude;
     static constexpr auto source = R"(
@@ -309,7 +325,9 @@ struct FragmentStage {
 FragmentStage vertex vertexMain(thread const VertexStage vertx [[stage_in]],
                                 device const GlobalPaintParamsUBO& paintParams [[buffer(idGlobalPaintParamsUBO)]],
                                 device const uint32_t& uboIndex [[buffer(idGlobalUBOIndex)]],
-                                device const SymbolDrawableUBO* drawableVector [[buffer(idSymbolDrawableUBO)]]) {
+                                device const SymbolDrawableUBO* drawableVector [[buffer(idSymbolDrawableUBO)]],
+                                texture2d<float, access::sample> dem_image [[texture(2)]],
+                                sampler dem_sampler [[sampler(2)]]) {
 
     device const SymbolDrawableUBO& drawable = drawableVector[uboIndex];
 
@@ -389,13 +407,21 @@ FragmentStage vertex vertexMain(thread const VertexStage vertx [[stage_in]],
     const float2 pos_rot = a_offset / 32.0 * fontScale + a_pxoffset;
     const float2 pos0 = projected_pos.xy / projected_pos.w + rotation_matrix * pos_rot;
     const float4 rawPosition = drawable.coord_matrix * float4(pos0, 0.0, 1.0);
-    // letsgothru/terrain-3d: raise the label onto the terrain by the screen-space
-    // projection of the anchor's elevation (drawable.terrain_elevation, tile units).
+    // letsgothru/terrain-3d: per-anchor elevation. Sample the bound DEM texture at
+    // the anchor, decode Terrarium metres, scale to tile units, then (a) lift the
+    // label up the screen onto the surface and (b) carry the elevated anchor's
+    // depth so terrain in front of it occludes the label.
     float4 position = rawPosition;
-    if (drawable.terrain_elevation != 0.0) {
+    if (drawable.has_terrain != 0) {
+        const float2 demUV = drawable.dem_tl + (a_pos / 8192.0) * drawable.dem_scale;
+        const float4 demSample = dem_image.sample(dem_sampler, demUV);
+        const float demMeters =
+            (demSample.r * 255.0 * 256.0 + demSample.g * 255.0 + demSample.b * 255.0 / 256.0) - 32768.0;
+        const float elev = demMeters * drawable.meters_to_tile_x_exag;
         const float4 flatA = drawable.matrix * float4(a_pos, 0.0, 1.0);
-        const float4 raisedA = drawable.matrix * float4(a_pos, drawable.terrain_elevation, 1.0);
+        const float4 raisedA = drawable.matrix * float4(a_pos, elev, 1.0);
         position.xy += (raisedA.xy / raisedA.w - flatA.xy / flatA.w) * rawPosition.w;
+        position.z = (raisedA.z / raisedA.w) * position.w;
     }
 
     return {
@@ -492,7 +518,7 @@ struct ShaderSource<BuiltIn::SymbolTextAndIconShader, gfx::Backend::Type::Metal>
 
     static const std::array<AttributeInfo, 9> attributes;
     static constexpr std::array<AttributeInfo, 0> instanceAttributes{};
-    static const std::array<TextureInfo, 2> textures;
+    static const std::array<TextureInfo, 3> textures;
 
     static constexpr auto prelude = symbolShaderPrelude;
     static constexpr auto source = R"(
@@ -554,7 +580,9 @@ struct FragmentStage {
 FragmentStage vertex vertexMain(thread const VertexStage vertx [[stage_in]],
                                 device const GlobalPaintParamsUBO& paintParams [[buffer(idGlobalPaintParamsUBO)]],
                                 device const uint32_t& uboIndex [[buffer(idGlobalUBOIndex)]],
-                                device const SymbolDrawableUBO* drawableVector [[buffer(idSymbolDrawableUBO)]]) {
+                                device const SymbolDrawableUBO* drawableVector [[buffer(idSymbolDrawableUBO)]],
+                                texture2d<float, access::sample> dem_image [[texture(2)]],
+                                sampler dem_sampler [[sampler(2)]]) {
 
     device const SymbolDrawableUBO& drawable = drawableVector[uboIndex];
 
@@ -635,13 +663,21 @@ FragmentStage vertex vertexMain(thread const VertexStage vertx [[stage_in]],
     const float2 pos_rot = a_offset / 32.0 * fontScale;
     const float2 pos0 = projected_pos.xy / projected_pos.w + rotation_matrix * pos_rot;
     const float4 rawPosition = drawable.coord_matrix * float4(pos0, 0.0, 1.0);
-    // letsgothru/terrain-3d: raise the label onto the terrain by the screen-space
-    // projection of the anchor's elevation (drawable.terrain_elevation, tile units).
+    // letsgothru/terrain-3d: per-anchor elevation. Sample the bound DEM texture at
+    // the anchor, decode Terrarium metres, scale to tile units, then (a) lift the
+    // label up the screen onto the surface and (b) carry the elevated anchor's
+    // depth so terrain in front of it occludes the label.
     float4 position = rawPosition;
-    if (drawable.terrain_elevation != 0.0) {
+    if (drawable.has_terrain != 0) {
+        const float2 demUV = drawable.dem_tl + (a_pos / 8192.0) * drawable.dem_scale;
+        const float4 demSample = dem_image.sample(dem_sampler, demUV);
+        const float demMeters =
+            (demSample.r * 255.0 * 256.0 + demSample.g * 255.0 + demSample.b * 255.0 / 256.0) - 32768.0;
+        const float elev = demMeters * drawable.meters_to_tile_x_exag;
         const float4 flatA = drawable.matrix * float4(a_pos, 0.0, 1.0);
-        const float4 raisedA = drawable.matrix * float4(a_pos, drawable.terrain_elevation, 1.0);
+        const float4 raisedA = drawable.matrix * float4(a_pos, elev, 1.0);
         position.xy += (raisedA.xy / raisedA.w - flatA.xy / flatA.w) * rawPosition.w;
+        position.z = (raisedA.z / raisedA.w) * position.w;
     }
     const float gamma_scale = position.w;
     const bool is_icon = (is_sdf == ICON);

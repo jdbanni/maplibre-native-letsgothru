@@ -124,6 +124,7 @@ void RenderTerrain::update(RenderOrchestrator& orchestrator,
         const auto& tid = drawable.getTileID();
         if (tid && presentTiles.count(*tid) == 0) {
             tilesWithDrawables.erase(*tid);
+            demTextures.erase(*tid); // letsgothru/terrain-3d
             return true;
         }
         return false;
@@ -186,6 +187,7 @@ void RenderTerrain::update(RenderOrchestrator& orchestrator,
             gfx::Drawable* raw = drawable.get();
             lg->addDrawable(std::move(drawable));
             tilesWithDrawables[tileID] = raw;
+            demTextures[tileID] = demTexture; // letsgothru/terrain-3d: keep for symbol elevation
             newDrawables++;
         }
     }
@@ -251,6 +253,41 @@ float RenderTerrain::getElevation(const UnwrappedTileID& tileID, float x, float 
 
 float RenderTerrain::getElevationWithExaggeration(const UnwrappedTileID& tileID, float x, float y) const {
     return getElevation(tileID, x, y) * getExaggeration();
+}
+
+std::optional<RenderTerrain::DEMTextureRef> RenderTerrain::getDEMTextureFor(const UnwrappedTileID& tileID) const {
+    // letsgothru/terrain-3d: find the cached DEM texture whose tile covers this
+    // (symbol) tile at the same or a lower zoom, so one texture covers the whole
+    // tile. Prefer the highest-zoom (most detailed) candidate. Returns the uv
+    // transform mapping the symbol tile's [0,EXTENT] coords into [0,1] DEM uv.
+    const int sz = tileID.canonical.z;
+    const double sx = static_cast<double>(tileID.canonical.x);
+    const double sy = static_cast<double>(tileID.canonical.y);
+
+    std::optional<DEMTextureRef> best;
+    int bestZ = -1;
+    for (const auto& [demTid, texture] : demTextures) {
+        if (!texture) {
+            continue;
+        }
+        const int dz = demTid.canonical.z;
+        if (dz > sz || dz <= bestZ) {
+            continue; // higher zoom can't cover with one tile; lower than best is worse
+        }
+        const double scale = std::exp2(static_cast<double>(dz - sz)); // <= 1
+        if (static_cast<int64_t>(std::floor(sx * scale)) != static_cast<int64_t>(demTid.canonical.x) ||
+            static_cast<int64_t>(std::floor(sy * scale)) != static_cast<int64_t>(demTid.canonical.y)) {
+            continue; // this DEM tile doesn't cover the query tile
+        }
+        DEMTextureRef ref;
+        ref.texture = texture;
+        ref.demScale = static_cast<float>(scale);
+        ref.demTlX = static_cast<float>(sx * scale - static_cast<double>(demTid.canonical.x));
+        ref.demTlY = static_cast<float>(sy * scale - static_cast<double>(demTid.canonical.y));
+        best = ref;
+        bestZ = dz;
+    }
+    return best;
 }
 
 float RenderTerrain::getExaggeration() const {
@@ -463,15 +500,19 @@ std::unique_ptr<gfx::Drawable> RenderTerrain::createDrawableForTile(gfx::Context
         return nullptr;
     }
 
-    // Configure builder - terrain is 3D and writes depth
-    // NOTE: Using Translucent pass because Opaque pass renders in REVERSE order (high index = back)
-    // TEMP: Disable depth testing to render on top of everything
+    // Configure builder - terrain is 3D and writes depth.
+    // Translucent pass renders in forward (ascending-index) order; the terrain
+    // layer index (-1000) makes it draw first, before symbols.
+    // letsgothru/terrain-3d: write depth so elevated symbols behind hills are
+    // occluded by the GPU depth test (DepthMaskType::ReadWrite + enableDepth).
+    // MLN_NO_TERRAIN_DEPTH disables the depth write (A/B aid for occlusion).
+    const bool terrainWritesDepth = !std::getenv("MLN_NO_TERRAIN_DEPTH");
     builder->setShader(terrainShader);
-    builder->setRenderPass(RenderPass::Translucent); // Translucent pass renders in forward order (high index = front)
-    builder->setDepthType(gfx::DepthMaskType::ReadOnly); // Don't write depth
+    builder->setRenderPass(RenderPass::Translucent);
+    builder->setDepthType(terrainWritesDepth ? gfx::DepthMaskType::ReadWrite : gfx::DepthMaskType::ReadOnly);
     builder->setColorMode(gfx::ColorMode::unblended());
-    builder->setEnableDepth(false); // Disable depth testing
-    builder->setIs3D(false);        // Treat as 2D for now
+    builder->setEnableDepth(terrainWritesDepth); // test + write depth for occlusion
+    builder->setIs3D(false);                     // 2D depth mode (LessEqual); mesh supplies its own z
 
     // Set vertex data - copy vertices to raw buffer
     std::vector<uint8_t> vertexData(terrainMesh.vertices.size() * sizeof(int16_t));

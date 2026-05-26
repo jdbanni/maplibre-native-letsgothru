@@ -348,6 +348,7 @@ enum {
 enum {
     idSymbolImageTexture,
     idSymbolImageIconTexture,
+    idSymbolDEMTexture, // letsgothru/terrain-3d: DEM for per-anchor elevation
     symbolTextureCount
 };
 

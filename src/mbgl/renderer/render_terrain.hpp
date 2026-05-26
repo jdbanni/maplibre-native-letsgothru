@@ -93,6 +93,20 @@ public:
     float getElevationWithExaggeration(const UnwrappedTileID& tileID, float x, float y) const;
 
     /**
+     * @brief letsgothru/terrain-3d: GPU DEM texture covering a (symbol) tile, plus
+     *        the uv transform to sample it: uv = (demTlX, demTlY) + (pos/EXTENT)*demScale.
+     *        Used to lift and depth-clamp labels per-anchor in the symbol shader.
+     *        Returns nullopt when no single cached DEM texture covers the tile.
+     */
+    struct DEMTextureRef {
+        std::shared_ptr<gfx::Texture2D> texture;
+        float demTlX = 0.0f;
+        float demTlY = 0.0f;
+        float demScale = 1.0f;
+    };
+    std::optional<DEMTextureRef> getDEMTextureFor(const UnwrappedTileID& tileID) const;
+
+    /**
      * @brief Get the terrain exaggeration multiplier
      */
     float getExaggeration() const;
@@ -176,6 +190,10 @@ private:
     // Track which tiles have terrain drawables, mapping each to the (layer-group
     // owned) drawable so its per-frame RTT texture can be re-pointed each frame.
     std::unordered_map<OverscaledTileID, gfx::Drawable*> tilesWithDrawables;
+
+    // letsgothru/terrain-3d: GPU DEM textures kept alive for per-anchor symbol
+    // elevation lookups. Mirrors tilesWithDrawables (same keys/lifetime).
+    std::unordered_map<OverscaledTileID, std::shared_ptr<gfx::Texture2D>> demTextures;
 
     // Mesh resolution (vertices per side)
     static constexpr size_t MESH_SIZE = 128;

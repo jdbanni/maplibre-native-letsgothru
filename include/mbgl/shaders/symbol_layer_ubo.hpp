@@ -30,12 +30,21 @@ struct alignas(16) SymbolDrawableUBO {
     /* 252 */ float halo_width_t;
     /* 256 */ float halo_blur_t;
 
-    // letsgothru/terrain-3d: anchor elevation in tile units (DEM meters *
-    // exaggeration * metersToTileUnits), or 0 when terrain is inactive.
-    /* 260 */ float terrain_elevation;
-    /* 264 */
+    // letsgothru/terrain-3d: per-anchor DEM elevation. When has_terrain != 0 the
+    // symbol vertex shader samples the bound DEM texture at
+    //   uv = dem_tl + (a_pos / EXTENT) * dem_scale
+    // decodes Terrarium metres, multiplies by meters_to_tile_x_exag to get tile
+    // units, and lifts the label onto the surface (and sets its depth so terrain
+    // in front occludes it). 0 when terrain is inactive.
+    /* 260 */ /*bool*/ int has_terrain;
+    /* 264 */ float meters_to_tile_x_exag;
+    /* 268 */ float dem_scale;
+    /* 272 */ std::array<float, 2> dem_tl;
+    /* 280 */ float pad_t1;
+    /* 284 */ float pad_t2;
+    /* 288 */
 };
-static_assert(sizeof(SymbolDrawableUBO) == 17 * 16);
+static_assert(sizeof(SymbolDrawableUBO) == 18 * 16);
 
 struct alignas(16) SymbolTilePropsUBO {
     /*  0 */ /*bool*/ int is_text;
