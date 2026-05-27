@@ -9,6 +9,8 @@
 #include <mbgl/renderer/render_tree.hpp>
 #include <mbgl/renderer/render_orchestrator.hpp>
 
+#include <cstdlib>
+
 namespace mbgl {
 
 RenderTarget::RenderTarget(gfx::Context& context_, const Size size, const gfx::TextureChannelDataType type)
@@ -92,7 +94,16 @@ void RenderTarget::render(RenderOrchestrator& orchestrator, const RenderTree& re
     // so panning over the same region reuses the cached FBO texture and avoids
     // the per-RTT commit()+waitUntilCompleted() GPU stall. (Hillshade RTTs have
     // no terrainTileID and always render, as before.)
-    if (terrainTileID && pendingFingerprint == renderedFingerprint) {
+    // letsgothru/terrain-3d: the fingerprint dirty-skip (reuse an unchanged RTT
+    // FBO instead of re-rendering) leaves a stale/blank texture in continuous
+    // mode -- the offscreen texture is single-buffered and skipping its
+    // commit()/swap() desyncs it, causing flicker and blank frames. It also
+    // rarely fires when the DEM is over-zoomed (fingerprint churns every frame),
+    // so it costs correctness without buying perf. Disabled by default; opt back
+    // in with MLN_RTT_SKIP while the proper fix (batch RTT commits / drop the
+    // per-RTT waitUntilCompleted stall) is pending.
+    static const bool rttSkipEnabled = std::getenv("MLN_RTT_SKIP") != nullptr;
+    if (rttSkipEnabled && terrainTileID && pendingFingerprint == renderedFingerprint) {
         return;
     }
     // letsgothru terrain: explicitly clear depth to 1.0 (far plane) and stencil to 0
