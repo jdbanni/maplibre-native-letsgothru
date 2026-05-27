@@ -324,42 +324,83 @@ void RenderTerrain::generateMesh(gfx::Context& /*context*/) {
     vertices.reserve(totalVertices * 4); // 4 shorts per vertex (x, y, u, v)
 
     const float posStep = static_cast<float>(util::EXTENT) / static_cast<float>(gridSize);
-    const float texStep = static_cast<float>(util::EXTENT) / static_cast<float>(gridSize);
 
+    // Main grid. texture_pos is repurposed as a skirt flag (x: 0 = surface vertex).
     for (size_t y = 0; y < verticesPerSide; ++y) {
         for (size_t x = 0; x < verticesPerSide; ++x) {
-            // Position coordinates (in tile space 0-8192)
-            vertices.push_back(static_cast<int16_t>(x * posStep));
-            vertices.push_back(static_cast<int16_t>(y * posStep));
-            // Texture coordinates (same as position for now - will be used to sample DEM)
-            vertices.push_back(static_cast<int16_t>(x * texStep));
-            vertices.push_back(static_cast<int16_t>(y * texStep));
+            vertices.push_back(static_cast<int16_t>(x * posStep)); // pos.x (tile space 0-8192)
+            vertices.push_back(static_cast<int16_t>(y * posStep)); // pos.y
+            vertices.push_back(0);                                 // skirt flag (0 = surface)
+            vertices.push_back(0);
         }
     }
 
     // Index data: generate triangles for the grid
     std::vector<uint16_t> indices;
-    indices.reserve(gridSize * gridSize * 6); // 2 triangles per grid cell, 3 indices per triangle
+    indices.reserve(gridSize * gridSize * 6 + gridSize * 4 * 6);
 
     for (size_t y = 0; y < gridSize; ++y) {
         for (size_t x = 0; x < gridSize; ++x) {
-            // Calculate vertex indices for this grid cell
             uint16_t topLeft = static_cast<uint16_t>(y * verticesPerSide + x);
             uint16_t topRight = topLeft + 1;
             uint16_t bottomLeft = static_cast<uint16_t>((y + 1) * verticesPerSide + x);
             uint16_t bottomRight = bottomLeft + 1;
 
-            // First triangle (top-left, bottom-left, top-right)
             indices.push_back(topLeft);
             indices.push_back(bottomLeft);
             indices.push_back(topRight);
 
-            // Second triangle (top-right, bottom-left, bottom-right)
             indices.push_back(topRight);
             indices.push_back(bottomLeft);
             indices.push_back(bottomRight);
         }
     }
+
+    // letsgothru/terrain-3d: skirts. Adjacent tiles' edges sample separate DEM
+    // textures whose shared-edge heights differ by ~a DEM pixel, leaving hairline
+    // cracks (you can see through to the background). Hang a downward apron from
+    // each tile's perimeter: duplicate the border vertices, flag them as skirt
+    // (texture_pos.x = 1) so the shader drops them below the surface, and stitch
+    // a vertical strip between the edge and the apron to fill the gaps.
+    const auto gridIdx = [&](size_t x, size_t y) {
+        return static_cast<uint16_t>(y * verticesPerSide + x);
+    };
+    const auto addSkirtStrip = [&](const std::vector<std::pair<size_t, size_t>>& border) {
+        const auto firstSkirt = static_cast<uint16_t>(vertices.size() / 4);
+        for (const auto& [gx, gy] : border) {
+            vertices.push_back(static_cast<int16_t>(gx * posStep));
+            vertices.push_back(static_cast<int16_t>(gy * posStep));
+            vertices.push_back(1); // skirt flag
+            vertices.push_back(0);
+        }
+        for (size_t i = 0; i + 1 < border.size(); ++i) {
+            const uint16_t e0 = gridIdx(border[i].first, border[i].second);
+            const uint16_t e1 = gridIdx(border[i + 1].first, border[i + 1].second);
+            const auto s0 = static_cast<uint16_t>(firstSkirt + i);
+            const auto s1 = static_cast<uint16_t>(firstSkirt + i + 1);
+            // Two triangles per segment (both windings emitted so the apron shows
+            // regardless of cull state).
+            indices.push_back(e0);
+            indices.push_back(e1);
+            indices.push_back(s0);
+            indices.push_back(s1);
+            indices.push_back(s0);
+            indices.push_back(e1);
+        }
+    };
+    std::vector<std::pair<size_t, size_t>> top, bottom, left, right;
+    for (size_t x = 0; x < verticesPerSide; ++x) {
+        top.emplace_back(x, 0);
+        bottom.emplace_back(x, gridSize);
+    }
+    for (size_t y = 0; y < verticesPerSide; ++y) {
+        left.emplace_back(0, y);
+        right.emplace_back(gridSize, y);
+    }
+    addSkirtStrip(top);
+    addSkirtStrip(bottom);
+    addSkirtStrip(left);
+    addSkirtStrip(right);
 
     // Store mesh data with raw vertices and indices
     mesh = TerrainMesh{nullptr,             // vertexBuffer - will be created when creating drawable

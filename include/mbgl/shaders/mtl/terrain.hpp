@@ -104,7 +104,11 @@ FragmentStage vertex vertexMain(thread const VertexStage vertx [[stage_in]],
     // using THIS tile's own zoom, set by TerrainLayerTweaker). Using a single
     // layer-wide value made the whole mesh flatten/double then snap back during
     // zoom/rotate transitions when tiles of different zooms briefly coexisted.
-    float elevation = elevationMeters * drawable.exaggeration;
+    //
+    // texture_pos.x is repurposed as a skirt flag: skirt vertices (the perimeter
+    // apron) drop below the surface to fill hairline cracks between tiles.
+    const float skirtMetres = (vertx.texture_pos.x > 0) ? 300.0 : 0.0;
+    float elevation = (elevationMeters - skirtMetres) * drawable.exaggeration;
 
     // Create 3D position with elevation as Z coordinate
     float4 position = drawable.matrix * float4(pos.x, pos.y, elevation, 1.0);
