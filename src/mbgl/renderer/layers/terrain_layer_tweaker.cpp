@@ -40,12 +40,24 @@ void TerrainLayerTweaker::execute(LayerGroupBase& layerGroup, const PaintParamet
     // letsgothru/terrain-3d: convert elevation from meters to tile-space units.
     // At zoom z and latitude lat, 1 meter ≈ (2^z * EXTENT) / (cos(lat) * earth_circumference) tile units.
     // We bake this into the exaggeration so the shader doesn't need to know about projection.
+    //
+    // CRITICAL: the tile matrix (matrixForTile) maps z in the DEM tile's *own*
+    // zoom units. Above the DEM source maxzoom the tiles are over-scaled (their
+    // canonical zoom stays capped), so we must scale by the tile's canonical zoom,
+    // not the view zoom — otherwise the mesh is over-scaled by 2^(viewZoom-tileZoom)
+    // and balloons off-screen (terrain went blank above z14 with a z12 DEM).
     constexpr float EARTH_CIRCUMFERENCE_M = 40075016.686f;
     constexpr float EXTENT_F = 8192.0f;
-    const float zoom = static_cast<float>(parameters.state.getZoom());
+    int demTileZoom = static_cast<int>(parameters.state.getZoom());
+    visitLayerGroupDrawables(layerGroup, [&](gfx::Drawable& drawable) {
+        if (drawable.getTileID()) {
+            demTileZoom = drawable.getTileID()->canonical.z;
+        }
+    });
     const float latRad = static_cast<float>(parameters.state.getLatLng().latitude() * M_PI / 180.0);
     const float cosLat = std::max(0.05f, std::cos(latRad));
-    const float metersToTileUnits = std::exp2(zoom) * EXTENT_F / (cosLat * EARTH_CIRCUMFERENCE_M);
+    const float metersToTileUnits = std::exp2(static_cast<float>(demTileZoom)) * EXTENT_F /
+                                    (cosLat * EARTH_CIRCUMFERENCE_M);
     const float exaggeration = baseExaggeration * metersToTileUnits;
     const float elevationOffset = 0.0f;
 

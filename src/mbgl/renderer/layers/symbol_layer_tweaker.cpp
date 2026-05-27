@@ -105,16 +105,18 @@ void SymbolLayerTweaker::execute(LayerGroupBase& layerGroup, const PaintParamete
     // samples the bound DEM texture and converts metres to tile units with this
     // factor (metres * exaggeration * metersToTileUnits), matching TerrainLayerTweaker
     // so labels track the mesh exactly. MLN_NO_SYMBOL_ELEVATION disables it (A/B aid).
+    // The zoom-dependent 2^z factor is applied per-drawable below using each tile's
+    // canonical zoom (NOT the view zoom): above the basemap maxzoom symbol tiles are
+    // over-scaled, and the lift must match each tile's own matrix or labels detach
+    // from the terrain (same overzoom issue as TerrainLayerTweaker).
     const bool symbolElevationEnabled = parameters.terrain && !std::getenv("MLN_NO_SYMBOL_ELEVATION");
-    float metersToTileUnitsXExag = 0.0f;
+    float metersToTileUnitsFactor = 0.0f; // excludes 2^z; multiply by exp2(tile.z) per drawable
     if (symbolElevationEnabled) {
         constexpr float EXTENT_F = 8192.0f;
         constexpr float EARTH_CIRCUMFERENCE_M = 40075016.686f;
         const float latRad = static_cast<float>(state.getLatLng().latitude() * M_PI / 180.0);
         const float cosLat = std::max(0.05f, std::cos(latRad));
-        const float metersToTileUnits = std::exp2(static_cast<float>(state.getZoom())) * EXTENT_F /
-                                        (cosLat * EARTH_CIRCUMFERENCE_M);
-        metersToTileUnitsXExag = metersToTileUnits * parameters.terrain->getExaggeration();
+        metersToTileUnitsFactor = EXTENT_F / (cosLat * EARTH_CIRCUMFERENCE_M) * parameters.terrain->getExaggeration();
     }
 
     visitLayerGroupDrawables(layerGroup, [&](gfx::Drawable& drawable) {
@@ -127,10 +129,12 @@ void SymbolLayerTweaker::execute(LayerGroupBase& layerGroup, const PaintParamete
         // letsgothru/terrain-3d: bind the covering DEM texture so the shader can
         // sample per-anchor elevation. has_terrain stays 0 if none covers this tile.
         std::optional<RenderTerrain::DEMTextureRef> demRef;
+        float metersToTileUnitsXExag = 0.0f;
         if (symbolElevationEnabled) {
             demRef = parameters.terrain->getDEMTextureFor(tileID);
             if (demRef) {
                 drawable.setTexture(demRef->texture, idSymbolDEMTexture);
+                metersToTileUnitsXExag = std::exp2(static_cast<float>(tileID.canonical.z)) * metersToTileUnitsFactor;
             }
         }
 
