@@ -14,6 +14,7 @@
 #include <mbgl/shaders/fill_extrusion_layer_ubo.hpp>
 #include <mbgl/shaders/shader_defines.hpp>
 #include <cmath>
+#include <cstdlib>
 #include <mbgl/shaders/shader_program_base.hpp>
 #include <mbgl/style/layers/fill_extrusion_layer_properties.hpp>
 
@@ -67,18 +68,6 @@ void FillExtrusionLayerTweaker::execute(LayerGroupBase& layerGroup, const PaintP
     const auto defPattern = mbgl::Faded<expression::Image>{.from = "", .to = ""};
     const auto fillPatternValue = evaluated.get<FillExtrusionPattern>().constantOr(defPattern);
 
-    // letsgothru/terrain-3d: lift building bases onto the DEM surface. The shader
-    // samples the bound DEM and converts metres to tile units with this factor
-    // (excludes the 2^z term, applied per-drawable from the tile's canonical zoom,
-    // matching TerrainLayerTweaker so buildings sit on the mesh).
-    float metersToTileUnitsFactor = 0.0f;
-    if (parameters.terrain) {
-        constexpr float EXTENT_F = 8192.0f;
-        constexpr float EARTH_CIRCUMFERENCE_M = 40075016.686f;
-        const float latRad = static_cast<float>(state.getLatLng().latitude() * M_PI / 180.0);
-        const float cosLat = std::max(0.05f, std::cos(latRad));
-        metersToTileUnitsFactor = EXTENT_F / (cosLat * EARTH_CIRCUMFERENCE_M) * parameters.terrain->getExaggeration();
-    }
 
 #if MLN_UBO_CONSOLIDATION
     int i = 0;
@@ -103,8 +92,14 @@ void FillExtrusionLayerTweaker::execute(LayerGroupBase& layerGroup, const PaintP
         const auto anchor = evaluated.get<FillExtrusionTranslateAnchor>();
         constexpr bool inViewportPixelUnits = false; // from RenderTile::translatedMatrix
         constexpr bool nearClipped = true;
+        // letsgothru/terrain-3d: fill-extrusion is 3D and drawn on screen, NOT draped.
+        // getTileMatrix defaults renderToTerrain=true, which returns the flat RTT
+        // draping matrix when terrain is active and collapses the buildings -- pass
+        // false (as symbols do) to get the real 3D projection.
+        constexpr bool aligned = false;
+        constexpr bool renderToTerrain = false;
         const auto matrix = getTileMatrix(
-            tileID, parameters, translation, anchor, nearClipped, inViewportPixelUnits, drawable);
+            tileID, parameters, translation, anchor, nearClipped, inViewportPixelUnits, drawable, aligned, renderToTerrain);
 
         const auto tileRatio = 1 / tileID.pixelsToTileUnits(1, state.getIntegerZoom());
         const auto zoomScale = state.zoomScale(tileID.canonical.z);
@@ -124,7 +119,13 @@ void FillExtrusionLayerTweaker::execute(LayerGroupBase& layerGroup, const PaintP
             demRef = parameters.terrain->getDEMTextureFor(tileID);
             if (demRef) {
                 drawable.setTexture(demRef->texture, idFillExtrusionDEMTexture);
-                metersToTileUnitsXExag = std::exp2(static_cast<float>(tileID.canonical.z)) * metersToTileUnitsFactor;
+                // Unlike symbols/mesh (tile-unit matrices), the fill-extrusion
+                // nearClipped matrix maps z as metres -- a sea-level building
+                // renders its `height` metres at the correct size. So the surface
+                // lift is just demMetres * exaggeration (raw metres), which lands
+                // at the same real-world height as the mesh (mesh pre-converts
+                // metres->tile-units, then its matrix maps back to the same metres).
+                metersToTileUnitsXExag = parameters.terrain->getExaggeration();
             }
         }
 
