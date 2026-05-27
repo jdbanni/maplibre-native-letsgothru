@@ -186,20 +186,35 @@ void addFillExtrusionLayer(mbgl::style::Style &style, bool visible) {
     using namespace mbgl::style;
     using namespace mbgl::style::expression::dsl;
 
-    // Satellite-only style does not contain building extrusions data.
-    if (!style.getSource("composite")) {
-        return;
-    }
-
     if (auto layer = style.getLayer("3d-buildings")) {
         layer->setVisibility(VisibilityType(!visible));
         return;
     }
 
-    auto extrusionLayer = std::make_unique<FillExtrusionLayer>("3d-buildings", "composite");
-    extrusionLayer->setSourceLayer("building");
-    extrusionLayer->setMinZoom(15.0f);
-    extrusionLayer->setFilter(Filter(eq(get("extrude"), literal("true"))));
+    // Pick a building schema present in the loaded style. Mapbox streets uses
+    // source `composite` / source-layer `building` with an `extrude` flag;
+    // protomaps (letsgothru) uses source `basemap` / source-layer `buildings`
+    // with a numeric `height`. Bail if neither is present.
+    std::string sourceID;
+    std::string sourceLayer;
+    if (style.getSource("composite")) {
+        sourceID = "composite";
+        sourceLayer = "building";
+    } else if (style.getSource("basemap") && style.getLayer("buildings")) {
+        sourceID = "basemap";
+        sourceLayer = "buildings";
+    } else {
+        mbgl::Log::Warning(mbgl::Event::General,
+                           "3D extrusions: no known building source (composite/basemap) in this style");
+        return;
+    }
+
+    auto extrusionLayer = std::make_unique<FillExtrusionLayer>("3d-buildings", sourceID);
+    extrusionLayer->setSourceLayer(sourceLayer);
+    extrusionLayer->setMinZoom(14.0f);
+    if (sourceID == "composite") {
+        extrusionLayer->setFilter(Filter(eq(get("extrude"), literal("true"))));
+    }
     extrusionLayer->setFillExtrusionColor(PropertyExpression<mbgl::Color>(interpolate(linear(),
                                                                                       number(get("height")),
                                                                                       0.f,
@@ -209,8 +224,11 @@ void addFillExtrusionLayer(mbgl::style::Style &style, bool visible) {
                                                                                       100.f,
                                                                                       toColor(literal("#55e9ff")))));
     extrusionLayer->setFillExtrusionOpacity(0.6f);
-    extrusionLayer->setFillExtrusionHeight(PropertyExpression<float>(get("height")));
-    extrusionLayer->setFillExtrusionBase(PropertyExpression<float>(get("min_height")));
+    // Fall back to a small height where the data has none, so something extrudes.
+    extrusionLayer->setFillExtrusionHeight(
+        PropertyExpression<float>(createExpression(R"(["coalesce", ["get", "height"], 8])")));
+    extrusionLayer->setFillExtrusionBase(
+        PropertyExpression<float>(createExpression(R"(["coalesce", ["get", "min_height"], 0])")));
     style.addLayer(std::move(extrusionLayer));
 }
 } // namespace
