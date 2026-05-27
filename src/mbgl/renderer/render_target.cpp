@@ -8,6 +8,8 @@
 #include <mbgl/renderer/paint_parameters.hpp>
 #include <mbgl/renderer/render_tree.hpp>
 #include <mbgl/renderer/render_orchestrator.hpp>
+#include <mbgl/util/string.hpp>
+#include <mbgl/util/logging.hpp>
 
 #include <cstdlib>
 
@@ -144,6 +146,29 @@ void RenderTarget::render(RenderOrchestrator& orchestrator, const RenderTree& re
         const auto savedTerrainTileID = parameters.terrainTileID;
         parameters.terrainTileID = terrainTileID;
         const auto count = orchestrator.numLayerGroups();
+
+        // letsgothru/terrain-3d DEBUG (MLN_PROXY_DEBUG): count draped drawables that
+        // overlap this RTT's terrain tile (==/child/parent) -- i.e. the ones that
+        // will produce a non-zero matrix and actually rasterise into the FBO.
+        static const bool lgtProxyDebug = std::getenv("MLN_PROXY_DEBUG") != nullptr;
+        if (lgtProxyDebug) {
+            size_t overlap = 0, totalDraped = 0;
+            const auto& tt = terrainTileID->canonical;
+            orchestrator.visitLayerGroups([&](LayerGroupBase& lg) {
+                if (!lg.shouldRenderToTerrain() || lg.getType() != LayerGroupBase::Type::TileLayerGroup) {
+                    return;
+                }
+                static_cast<TileLayerGroup&>(lg).visitDrawables([&](gfx::Drawable& d) {
+                    if (!d.getTileID()) return;
+                    totalDraped++;
+                    const auto c = d.getTileID()->canonical;
+                    if (c == tt || c.isChildOf(tt) || tt.isChildOf(c)) overlap++;
+                });
+            });
+            Log::Warning(Event::Render,
+                         "PROXY drape RTT " + util::toString(*terrainTileID) + ": overlap=" +
+                             std::to_string(overlap) + "/" + std::to_string(totalDraped) + " draped drawables");
+        }
 
         // letsgothru/terrain-3d: source-tile stencil clipping is meaningless in
         // the per-terrain-tile FBO (the clip masks are projected in screen space).

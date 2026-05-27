@@ -1,5 +1,7 @@
 #include <mbgl/renderer/render_terrain.hpp>
 #include <mbgl/renderer/update_parameters.hpp>
+#include <mbgl/util/tile_cover.hpp>
+#include <mbgl/util/constants.hpp>
 #include <mbgl/renderer/render_source.hpp>
 #include <mbgl/renderer/render_tile.hpp>
 #include <mbgl/renderer/render_pass.hpp>
@@ -30,6 +32,7 @@
 #include <mbgl/util/image.hpp>
 #include <mbgl/util/mat4.hpp>
 
+#include <algorithm>
 #include <cmath>
 #include <cstring>
 #include <unordered_set>
@@ -50,6 +53,60 @@ void RenderTerrain::update(const UpdateParameters& /*parameters*/) {
     }
 }
 
+void RenderTerrain::updateProxyTiles(const UpdateParameters& up) {
+    // letsgothru/terrain-3d: compute the render-zoom proxy-tile grid for draping.
+    // See updateProxyTiles() doc in the header for why this replaces the DEM-tile
+    // grid (drape resolution must track the render zoom, not the DEM maxzoom).
+    proxyTiles.clear();
+
+    const auto& state = up.transformState;
+    const double zoom = std::clamp<double>(
+        state.getZoom() + up.tileLodZoomShift, state.getMinZoom(), state.getMaxZoom());
+
+    // Render-zoom integer cover for a 512px vector source == floor(zoom). Capped
+    // so the drape stays sharp (well above the DEM maxzoom) without unbounded RTTs.
+    const int32_t coverZoom = util::coveringZoomLevel(
+        zoom, style::SourceType::Vector, static_cast<uint16_t>(util::tileSize_D));
+    const int32_t idealZoom = std::clamp<int32_t>(coverZoom, 0, MAX_PROXY_ZOOM);
+
+    const util::TileCoverParameters cov{.transformState = state,
+                                        .tileLodMinRadius = up.tileLodMinRadius,
+                                        .tileLodScale = up.tileLodScale,
+                                        .tileLodPitchThreshold = up.tileLodPitchThreshold,
+                                        .tileLodMode = up.tileLodMode};
+    const Range<uint8_t> zoomRange{0, static_cast<uint8_t>(idealZoom)};
+    auto tiles = util::tileCover(cov, static_cast<uint8_t>(idealZoom), zoomRange);
+
+    if (tiles.size() <= MAX_PROXY_TILES) {
+        proxyTiles = std::move(tiles);
+        return;
+    }
+
+    // Too many tiles (steep pitch toward the horizon): keep the MAX_PROXY_TILES
+    // nearest the view centre, where sharpness matters. Far tiles drop out (no
+    // terrain at the horizon) -- an accepted limit until proper distance LOD.
+    const LatLng center = state.getLatLng(LatLng::Unwrapped);
+    const double n = std::exp2(static_cast<double>(idealZoom));
+    const double cx = (center.longitude() + 180.0) / 360.0 * n;
+    const double latRad = center.latitude() * M_PI / 180.0;
+    const double cy = (1.0 - std::log(std::tan(latRad) + 1.0 / std::cos(latRad)) / M_PI) / 2.0 * n;
+    const auto dist2 = [&](const OverscaledTileID& t) {
+        const double dx = (static_cast<double>(t.canonical.x) + t.wrap * n + 0.5) - cx;
+        const double dy = (static_cast<double>(t.canonical.y) + 0.5) - cy;
+        return dx * dx + dy * dy;
+    };
+    std::partial_sort(
+        tiles.begin(),
+        tiles.begin() + static_cast<std::ptrdiff_t>(MAX_PROXY_TILES),
+        tiles.end(),
+        [&](const OverscaledTileID& a, const OverscaledTileID& b) { return dist2(a) < dist2(b); });
+    tiles.erase(tiles.begin() + static_cast<std::ptrdiff_t>(MAX_PROXY_TILES), tiles.end());
+    proxyTiles = std::move(tiles);
+}
+
+// letsgothru/terrain-3d DEBUG: opt-in proxy-tile diagnostics (MLN_PROXY_DEBUG).
+static const bool lgtProxyDebug = std::getenv("MLN_PROXY_DEBUG") != nullptr;
+
 void RenderTerrain::update(RenderOrchestrator& orchestrator,
                            gfx::ShaderRegistry& shaders,
                            gfx::Context& context,
@@ -68,14 +125,19 @@ void RenderTerrain::update(RenderOrchestrator& orchestrator,
         }
     }
 
-    // letsgothru/terrain-3d: incremental update for continuous mode.
-    // The previous code force-rebuilt the entire terrain layer group every
-    // frame (reset layerGroup + clear tilesWithDrawables), which recreated
-    // every DEM texture and drawable per frame. In continuous mode that leaked
-    // GPU memory and drove frame time up without bound (~656 ms/frame after a
-    // few seconds; ~1.7 GB of DEM uploads in 16 frames). We now keep drawables
-    // across frames, build them only for newly-visible tiles, evict tiles that
-    // scroll off, and re-point the per-frame RTT texture (slot 1) below.
+    // letsgothru/terrain-3d: incremental, two-phase update for continuous mode.
+    //
+    // Phase 1 maintains a cache of DEM *elevation* textures keyed by the DEM
+    // source's render tiles (capped at the DEM maxzoom). Phase 2 maintains one
+    // terrain mesh drawable per *proxy tile* at the render zoom; each proxy tile
+    // drapes its own sharp render-to-texture (slot 1) and samples whatever DEM
+    // tile covers it (slot 0) via a uv transform set by the tweaker. Decoupling
+    // the two is what makes the drape track the render zoom (sharp) instead of
+    // the DEM grid (fuzzy) -- see updateProxyTiles().
+    //
+    // We keep drawables/textures across frames, building only newly-visible ones
+    // and evicting those that scroll off, so continuous mode doesn't leak GPU
+    // memory or rebuild everything per frame.
 
     // Create layer group if we don't have one
     if (!layerGroup) {
@@ -100,102 +162,143 @@ void RenderTerrain::update(RenderOrchestrator& orchestrator,
         return;
     }
 
-    // Get tiles from the DEM source. Immutable<> is never null; an empty list
-    // is fine — eviction below will then clear any stale drawables.
-    auto renderTiles = demSource->getRawRenderTiles();
-
     // Cast to LayerGroup for addDrawable
     auto* lg = static_cast<LayerGroup*>(layerGroup.get());
     if (!lg) {
         return;
     }
 
-    // Build the set of DEM tiles currently visible this frame.
-    std::unordered_set<OverscaledTileID> presentTiles;
-    presentTiles.reserve(renderTiles->size());
-    for (const auto& renderTile : *renderTiles) {
-        presentTiles.insert(renderTile.getOverscaledTileID());
+    // ----- Phase 1: DEM elevation-texture cache (keyed by DEM render tiles) -----
+    // These textures are the elevation source for both the proxy terrain meshes
+    // (below, via getDEMTextureFor) and the per-anchor symbol elevation lookups.
+    // They are NOT the mesh grid -- the DEM source maxzoom would make the drape
+    // fuzzy. Immutable<> is never null; an empty list just evicts stale textures.
+    auto demRenderTiles = demSource->getRawRenderTiles();
+    std::unordered_set<OverscaledTileID> presentDem;
+    presentDem.reserve(demRenderTiles->size());
+    for (const auto& renderTile : *demRenderTiles) {
+        presentDem.insert(renderTile.getOverscaledTileID());
     }
-
-    // Evict drawables whose DEM tile is no longer visible. This bounds GPU
-    // memory as the user pans/zooms in continuous mode; destroying the
-    // UniqueDrawable releases its DEM texture and geometry buffers.
-    const size_t evicted = lg->removeDrawablesIf([&](gfx::Drawable& drawable) {
-        const auto& tid = drawable.getTileID();
-        if (tid && presentTiles.count(*tid) == 0) {
-            tilesWithDrawables.erase(*tid);
-            demTextures.erase(*tid); // letsgothru/terrain-3d
-            return true;
+    for (auto it = demTextures.begin(); it != demTextures.end();) {
+        if (presentDem.count(it->first) == 0) {
+            it = demTextures.erase(it);
+        } else {
+            ++it;
         }
-        return false;
-    });
-    if (evicted > 0) {
-        Log::Info(Event::Render, "Terrain evicted " + std::to_string(evicted) + " drawables for off-screen tiles");
     }
-
-    // For each visible tile: build a drawable on first sight; otherwise just
-    // re-point its map texture (slot 1) at this frame's render-to-texture FBO,
-    // which the TexturePool recreates every frame.
-    size_t newDrawables = 0;
-    for (const auto& renderTile : *renderTiles) {
+    for (const auto& renderTile : *demRenderTiles) {
         const auto& tileID = renderTile.getOverscaledTileID();
-
-        // This frame's RTT FBO texture for the tile (recreated per frame).
-        std::shared_ptr<gfx::Texture2D> mapTexture;
-        if (const auto& renderTarget = texturePool.getRenderTarget(renderTile.id)) {
-            mapTexture = renderTarget->getTexture();
-        }
-
-        // Existing drawable: rebind the per-frame RTT texture and move on.
-        if (auto it = tilesWithDrawables.find(tileID); it != tilesWithDrawables.end()) {
-            if (mapTexture && it->second) {
-                it->second->setTexture(mapTexture, 1);
-            }
+        if (demTextures.count(tileID)) {
             continue;
         }
-
-        // New tile: build a drawable once its DEM data is available.
         const auto& tile = renderTile.getTile();
         if (tile.kind != Tile::Kind::RasterDEM) {
             continue;
         }
-
-        auto* demTile = const_cast<RasterDEMTile*>(static_cast<const RasterDEMTile*>(&tile));
-        if (!demTile) {
-            continue;
-        }
-
-        auto* hillshadeBucket = demTile->getBucket();
+        const auto* demTile = static_cast<const RasterDEMTile*>(&tile);
+        const auto* hillshadeBucket = demTile->getBucket();
         if (!hillshadeBucket) {
             continue; // still loading
         }
-
         const auto& demData = hillshadeBucket->getDEMData();
         auto imagePtr = demData.getImagePtr();
         if (!imagePtr || imagePtr->size.isEmpty()) {
             continue;
         }
-
-        auto demTexture = createDEMTexture(context, demData);
-        if (!demTexture) {
+        if (auto demTexture = createDEMTexture(context, demData)) {
+            demTextures[tileID] = std::move(demTexture);
+        } else {
             Log::Warning(Event::Render, "Failed to create DEM texture for tile " + util::toString(tileID));
+        }
+    }
+
+    if (lgtProxyDebug) {
+        std::string s = "PROXY: " + std::to_string(proxyTiles.size()) + " proxy tiles [";
+        for (size_t k = 0; k < proxyTiles.size() && k < 4; ++k) s += util::toString(proxyTiles[k]) + " ";
+        s += "] ; demTextures=" + std::to_string(demTextures.size()) + " [";
+        size_t k = 0;
+        for (const auto& [tid, t] : demTextures) {
+            if (k++ >= 4) break;
+            s += util::toString(tid) + " ";
+        }
+        s += "]";
+        Log::Warning(Event::Render, s);
+    }
+
+    // ----- Phase 2: proxy terrain mesh drawables (keyed by render-zoom tiles) ---
+    // proxyTiles was filled by updateProxyTiles() before updateLayers this frame.
+    std::unordered_set<OverscaledTileID> presentProxy;
+    presentProxy.reserve(proxyTiles.size());
+    for (const auto& proxy : proxyTiles) {
+        presentProxy.insert(proxy);
+    }
+
+    // Evict drawables whose proxy tile is no longer visible.
+    const size_t evicted = lg->removeDrawablesIf([&](gfx::Drawable& drawable) {
+        const auto& tid = drawable.getTileID();
+        if (tid && presentProxy.count(*tid) == 0) {
+            tilesWithDrawables.erase(*tid);
+            return true;
+        }
+        return false;
+    });
+    if (evicted > 0) {
+        Log::Info(Event::Render, "Terrain evicted " + std::to_string(evicted) + " proxy drawables");
+    }
+
+    // For each proxy tile: build a drawable on first sight; otherwise re-point its
+    // drape texture (slot 1, recreated per frame by the TexturePool) and DEM
+    // texture (slot 0, which may improve as higher-zoom DEM tiles load in).
+    size_t newDrawables = 0;
+    size_t haveMap = 0, haveDem = 0;
+    for (const auto& proxy : proxyTiles) {
+        const UnwrappedTileID uproxy = proxy.toUnwrapped();
+
+        std::shared_ptr<gfx::Texture2D> mapTexture;
+        if (const auto& renderTarget = texturePool.getRenderTarget(uproxy)) {
+            mapTexture = renderTarget->getTexture();
+        }
+        const auto demRef = getDEMTextureFor(uproxy);
+        if (mapTexture) haveMap++;
+        if (demRef && demRef->texture) haveDem++;
+
+        if (auto it = tilesWithDrawables.find(proxy); it != tilesWithDrawables.end()) {
+            if (it->second) {
+                if (mapTexture) {
+                    it->second->setTexture(mapTexture, 1);
+                }
+                if (demRef && demRef->texture) {
+                    it->second->setTexture(demRef->texture, 0);
+                }
+            }
             continue;
         }
 
-        auto drawable = createDrawableForTile(context, shaders, tileID, demTexture, mapTexture);
+        // New proxy tile: need a covering DEM texture before we can build it.
+        if (!demRef || !demRef->texture) {
+            continue; // DEM not loaded yet for this area; retry next frame
+        }
+        auto drawable = createDrawableForTile(context, shaders, proxy, demRef->texture, mapTexture);
         if (drawable) {
             gfx::Drawable* raw = drawable.get();
             lg->addDrawable(std::move(drawable));
-            tilesWithDrawables[tileID] = raw;
-            demTextures[tileID] = demTexture; // letsgothru/terrain-3d: keep for symbol elevation
+            tilesWithDrawables[proxy] = raw;
             newDrawables++;
         }
+    }
+
+    if (lgtProxyDebug) {
+        Log::Warning(Event::Render,
+                     "PROXY Phase2: proxies=" + std::to_string(proxyTiles.size()) +
+                         " haveMap=" + std::to_string(haveMap) + " haveDem=" + std::to_string(haveDem) +
+                         " drawablesNow=" + std::to_string(tilesWithDrawables.size()) +
+                         " newThisFrame=" + std::to_string(newDrawables));
     }
 
     if (newDrawables > 0) {
         Log::Info(Event::Render,
                   "Terrain created " + std::to_string(newDrawables) +
-                      " new drawables (total: " + std::to_string(tilesWithDrawables.size()) + ")");
+                      " new proxy drawables (total: " + std::to_string(tilesWithDrawables.size()) + ")");
     }
 }
 

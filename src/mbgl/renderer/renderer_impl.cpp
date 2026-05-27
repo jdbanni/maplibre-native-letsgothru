@@ -240,15 +240,18 @@ void Renderer::Impl::render(const RenderTree& renderTree, const std::shared_ptr<
 
     // letsgothru/terrain-3d: reconcile the persistent RTT pool against the
     // currently-visible terrain tiles -- reuse existing FBOs, allocate newly
-    // visible ones, evict those no longer in view.
+    // visible ones, evict those no longer in view. The terrain drapes per
+    // render-zoom *proxy* tile (sharp) rather than per DEM tile (capped at the
+    // DEM maxzoom -> fuzzy), so the RTT keys are the proxy tiles. updateProxyTiles
+    // caches the set; RenderTerrain::update (in updateLayers below) builds the
+    // matching meshes, each sampling its covering DEM tile via a uv transform.
     std::set<UnwrappedTileID> currentTerrainTiles;
     if (auto* terrain = orchestrator.getRenderTerrain()) {
-        if (RenderSource* demSource = orchestrator.getRenderSource(terrain->getSourceID())) {
-            auto renderTiles = demSource->getRawRenderTiles();
-            for (const auto& renderTile : *renderTiles) {
-                texturePool.createRenderTarget(context, renderTile.id, renderTreeParameters.backgroundColor);
-                currentTerrainTiles.insert(renderTile.id);
-            }
+        terrain->updateProxyTiles(*updateParameters);
+        for (const auto& proxy : terrain->getProxyTiles()) {
+            const UnwrappedTileID uproxy = proxy.toUnwrapped();
+            texturePool.createRenderTarget(context, uproxy, renderTreeParameters.backgroundColor);
+            currentTerrainTiles.insert(uproxy);
         }
     }
     texturePool.evictExcept(currentTerrainTiles);

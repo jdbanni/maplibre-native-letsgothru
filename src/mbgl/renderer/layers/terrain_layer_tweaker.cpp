@@ -77,8 +77,32 @@ void TerrainLayerTweaker::execute(LayerGroupBase& layerGroup, const PaintParamet
         // This uses the same matrix calculation as other layers
         mat4 matrix = parameters.matrixForTile(tileID);
 
-        // letsgothru/terrain-3d: per-tile exaggeration using this tile's own zoom.
-        const float tileExaggeration = std::exp2(static_cast<float>(tileID.canonical.z)) * exagPerTileFactor;
+        // letsgothru/terrain-3d: proxy-tile draping. This (render-zoom) proxy tile
+        // samples its covering DEM tile -- often a lower-zoom parent -- via the uv
+        // transform uv = dem_tl + (pos/EXTENT)*dem_scale. getDEMTextureFor() picks
+        // the same DEM texture that RenderTerrain bound at slot 0, so the geometry
+        // and the sample agree.
+        float demScale = 1.0f;
+        std::array<float, 2> demTl = {0.0f, 0.0f};
+        if (terrain) {
+            if (const auto demRef = terrain->getDEMTextureFor(tileID)) {
+                demScale = demRef->demScale;
+                demTl = {demRef->demTlX, demRef->demTlY};
+            }
+        }
+
+        // letsgothru/terrain-3d: per-tile exaggeration. CRITICAL: the elevation
+        // must scale by the *covering DEM tile's* zoom, not the proxy tile's.
+        // TransformState::matrixFor leaves the z axis at scale 1 (world pixels)
+        // while x,y get s/EXTENT, so the elevation value lands in world-pixel
+        // units that depend only on the DEM grid the height came from. Using the
+        // proxy (render) zoom over-scales it by 2^(proxyZoom - demZoom) -- e.g. 4x
+        // at a z14 view over a z12 DEM -- lifting the mesh past the camera/near
+        // plane so nothing rasterises (the whole frame goes blank above ~z13).
+        // demScale == 2^(demZoom - proxyZoom), so multiplying it in recovers the
+        // DEM-zoom basis the (capped-at-DEM-maxzoom) terrain mesh used before.
+        const float demZoomExp = std::exp2(static_cast<float>(tileID.canonical.z)) * demScale;
+        const float tileExaggeration = demZoomExp * exagPerTileFactor;
 
 #if !MLN_UBO_CONSOLIDATION
         auto& drawableUniforms = drawable.mutableUniformBuffers();
@@ -91,8 +115,8 @@ void TerrainLayerTweaker::execute(LayerGroupBase& layerGroup, const PaintParamet
 #endif
             .matrix = util::cast<float>(matrix),
             .exaggeration = tileExaggeration,
-            .dem_scale = 1.0f,            // Stage 1: identity (mesh tile == DEM tile)
-            .dem_tl = {0.0f, 0.0f},
+            .dem_scale = demScale,
+            .dem_tl = demTl,
         };
 
 #if !MLN_UBO_CONSOLIDATION

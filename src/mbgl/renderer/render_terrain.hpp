@@ -75,6 +75,20 @@ public:
                 UniqueChangeRequestVec& changes);
 
     /**
+     * @brief letsgothru/terrain-3d: compute the proxy-tile set for this frame.
+     *
+     * GL-JS-style draping renders terrain per *proxy tile at the render zoom*
+     * (not per DEM tile, which is capped at the DEM source maxzoom and makes the
+     * drape fuzzy). Each proxy tile gets its own sharp render-to-texture drape and
+     * samples whatever (lower-zoom) DEM tile covers it via a uv transform.
+     *
+     * Called once per frame (from Renderer::Impl, before updateLayers) so the RTT
+     * reconcile and update() below agree on the same set. Cached in `proxyTiles`.
+     */
+    void updateProxyTiles(const UpdateParameters& updateParameters);
+    const std::vector<OverscaledTileID>& getProxyTiles() const { return proxyTiles; }
+
+    /**
      * @brief Get elevation at a specific tile coordinate
      * @param tileID The tile containing the coordinate
      * @param x X coordinate within the tile
@@ -192,11 +206,24 @@ private:
     std::unordered_map<OverscaledTileID, gfx::Drawable*> tilesWithDrawables;
 
     // letsgothru/terrain-3d: GPU DEM textures kept alive for per-anchor symbol
-    // elevation lookups. Mirrors tilesWithDrawables (same keys/lifetime).
+    // elevation lookups AND as the elevation source for proxy terrain tiles.
+    // Keyed by DEM *render* tile (maintained in update() Phase 1) -- decoupled
+    // from the mesh drawables, which are now keyed by proxy tiles (Phase 2).
     std::unordered_map<OverscaledTileID, std::shared_ptr<gfx::Texture2D>> demTextures;
+
+    // letsgothru/terrain-3d: this frame's proxy tiles (render-zoom drape grid),
+    // computed by updateProxyTiles(). The keys of tilesWithDrawables track these.
+    std::vector<OverscaledTileID> proxyTiles;
 
     // Mesh resolution (vertices per side)
     static constexpr size_t MESH_SIZE = 128;
+
+    // letsgothru/terrain-3d: proxy-tile draping bounds. Cap the proxy zoom so the
+    // drape stays sharp (well above the DEM maxzoom) without unbounded RTT counts,
+    // and cap the tile count (nearest-first) so a steep pitch toward the horizon
+    // can't allocate hundreds of offscreen targets in one frame.
+    static constexpr int32_t MAX_PROXY_ZOOM = 15;
+    static constexpr size_t MAX_PROXY_TILES = 128;
 
     // Cached DEM source
     RenderSource* demSource = nullptr;
