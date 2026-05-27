@@ -18,9 +18,13 @@ enum {
 
 struct alignas(16) TerrainDrawableUBO {
     /*  0 */ float4x4 matrix;
-    /* 64 */
+    /* 64 */ float exaggeration; // letsgothru: per-tile (metres*style-exag*metersToTileUnits(tile.z))
+    /* 68 */ float pad0;
+    /* 72 */ float pad1;
+    /* 76 */ float pad2;
+    /* 80 */
 };
-static_assert(sizeof(TerrainDrawableUBO) == 4 * 16, "wrong size");
+static_assert(sizeof(TerrainDrawableUBO) == 5 * 16, "wrong size");
 
 struct alignas(16) TerrainTilePropsUBO {
     /*  0 */ float2 dem_tl;
@@ -65,6 +69,7 @@ struct FragmentStage {
     float2 uv;
     float elevation;
     float elevationMeters;
+    float exaggeration; // letsgothru: per-tile, for the fragment hillshade zScale
 };
 
 FragmentStage vertex vertexMain(thread const VertexStage vertx [[stage_in]],
@@ -95,8 +100,11 @@ FragmentStage vertex vertexMain(thread const VertexStage vertx [[stage_in]],
     // Calculate elevation in meters
     float elevationMeters = (r * 256.0 + g + b / 256.0) - 32768.0;
 
-    // Apply exaggeration for visible relief (default: 1.0, can be set higher for dramatic effect)
-    float elevation = elevationMeters * props.exaggeration;
+    // letsgothru/terrain-3d: per-tile exaggeration (metres->tile-units baked in
+    // using THIS tile's own zoom, set by TerrainLayerTweaker). Using a single
+    // layer-wide value made the whole mesh flatten/double then snap back during
+    // zoom/rotate transitions when tiles of different zooms briefly coexisted.
+    float elevation = elevationMeters * drawable.exaggeration;
 
     // Create 3D position with elevation as Z coordinate
     float4 position = drawable.matrix * float4(pos.x, pos.y, elevation, 1.0);
@@ -109,6 +117,7 @@ FragmentStage vertex vertexMain(thread const VertexStage vertx [[stage_in]],
         .uv          = uv,
         .elevation   = packedValue,  // Pass packed RGBA to detect any non-zero values
         .elevationMeters = elevationMeters,
+        .exaggeration = drawable.exaggeration,
     };
 }
 
@@ -141,7 +150,7 @@ half4 fragment fragmentMain(FragmentStage in [[stage_in]],
 
     // Vertical scale relative to horizontal texel spacing; folded with the
     // terrain exaggeration so the shading tracks the geometric relief.
-    const float zScale = 0.04 * max(props.exaggeration, 0.1);
+    const float zScale = 0.04 * max(in.exaggeration, 0.1);
     const float3 normal = normalize(float3((hL - hR) * zScale, (hD - hU) * zScale, 1.0));
     // Light from the NW, moderately high — the cartographic hillshade convention.
     const float3 lightDir = normalize(float3(-0.5, 0.5, 0.7));

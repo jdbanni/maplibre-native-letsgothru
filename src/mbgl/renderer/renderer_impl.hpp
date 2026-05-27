@@ -71,6 +71,10 @@ private:
     // keyed by terrain tile and reused across frames. Their draped content is
     // camera-independent, so panning reuses them instead of re-rendering +
     // GPU-syncing each one every frame.
+    // letsgothru/terrain-3d: per-tile drape resolution. 1024 cratered fps (85->19)
+    // without curing blur at high magnification (zooming into one tile magnifies
+    // its drape far beyond any fixed size). The real cure is draping at a higher
+    // tile zoom, not a bigger texture. Keep 512.
     TexturePool texturePool{512};
 
 #if MLN_RENDER_BACKEND_METAL

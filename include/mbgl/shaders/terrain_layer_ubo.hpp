@@ -7,9 +7,13 @@ namespace shaders {
 
 struct alignas(16) TerrainDrawableUBO {
     /*  0 */ std::array<float, 4 * 4> matrix;
-    /* 64 */
+    /* 64 */ float exaggeration; // letsgothru: per-tile (uses the tile's own zoom)
+    /* 68 */ float pad0;
+    /* 72 */ float pad1;
+    /* 76 */ float pad2;
+    /* 80 */
 };
-static_assert(sizeof(TerrainDrawableUBO) == 4 * 16);
+static_assert(sizeof(TerrainDrawableUBO) == 5 * 16);
 
 struct alignas(16) TerrainTilePropsUBO {
     /*  0 */ std::array<float, 2> dem_tl;

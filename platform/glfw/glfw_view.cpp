@@ -1296,6 +1296,9 @@ void GLFWView::report(float duration) {
         std::ostringstream oss;
         oss.precision(2);
         oss << "Frame time: " << std::fixed << frameTime << "ms (" << 1000 / frameTime << "fps)";
+        if (map) {
+            oss << "  z" << map->getCameraOptions().zoom.value_or(0.0);
+        }
         mbgl::Log::Info(mbgl::Event::Render, oss.str());
         setWindowTitle(oss.str());
 

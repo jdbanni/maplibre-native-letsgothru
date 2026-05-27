@@ -35,44 +35,29 @@ void TerrainLayerTweaker::execute(LayerGroupBase& layerGroup, const PaintParamet
     const auto debugGroup = parameters.encoder->createDebugGroup(label.c_str());
 #endif
 
-    // Get terrain properties
-    const float baseExaggeration = terrain->getExaggeration();
-    // letsgothru/terrain-3d: convert elevation from meters to tile-space units.
-    // At zoom z and latitude lat, 1 meter ≈ (2^z * EXTENT) / (cos(lat) * earth_circumference) tile units.
-    // We bake this into the exaggeration so the shader doesn't need to know about projection.
+    // letsgothru/terrain-3d: convert elevation metres -> tile-space units. At zoom z
+    // and latitude lat, 1 metre ≈ (2^z * EXTENT) / (cos(lat) * earth_circumference)
+    // tile units. We bake this into a per-tile exaggeration (below) so the shader
+    // needs no projection knowledge.
     //
-    // CRITICAL: the tile matrix (matrixForTile) maps z in the DEM tile's *own*
-    // zoom units. Above the DEM source maxzoom the tiles are over-scaled (their
-    // canonical zoom stays capped), so we must scale by the tile's canonical zoom,
-    // not the view zoom — otherwise the mesh is over-scaled by 2^(viewZoom-tileZoom)
-    // and balloons off-screen (terrain went blank above z14 with a z12 DEM).
+    // CRITICAL: this MUST use each tile's OWN canonical zoom, not the view zoom.
+    // The tile matrix maps z in the tile's own zoom units; above the DEM maxzoom
+    // tiles are over-scaled (canonical zoom capped). A single layer-wide value
+    // made the whole mesh flatten/double then snap back during zoom/rotate
+    // transitions when tiles of different zooms briefly coexisted -- hence the
+    // per-drawable computation in the loop.
+    const float baseExaggeration = terrain->getExaggeration();
     constexpr float EARTH_CIRCUMFERENCE_M = 40075016.686f;
     constexpr float EXTENT_F = 8192.0f;
-    int demTileZoom = static_cast<int>(parameters.state.getZoom());
-    visitLayerGroupDrawables(layerGroup, [&](gfx::Drawable& drawable) {
-        if (drawable.getTileID()) {
-            demTileZoom = drawable.getTileID()->canonical.z;
-        }
-    });
     const float latRad = static_cast<float>(parameters.state.getLatLng().latitude() * M_PI / 180.0);
     const float cosLat = std::max(0.05f, std::cos(latRad));
-    const float metersToTileUnits = std::exp2(static_cast<float>(demTileZoom)) * EXTENT_F /
-                                    (cosLat * EARTH_CIRCUMFERENCE_M);
-    const float exaggeration = baseExaggeration * metersToTileUnits;
-    const float elevationOffset = 0.0f;
+    const float exagPerTileFactor = baseExaggeration * EXTENT_F / (cosLat * EARTH_CIRCUMFERENCE_M);
 
-    static bool hasLoggedExaggeration = false;
-    if (!hasLoggedExaggeration) {
-        Log::Info(Event::Render,
-                  "Terrain exaggeration: base=" + std::to_string(baseExaggeration) +
-                      ", multiplied=" + std::to_string(exaggeration));
-        hasLoggedExaggeration = true;
-    }
-
-    // Populate layer-level UBO with terrain properties
+    // Populate layer-level UBO (exaggeration here is unused by the shader now; it
+    // reads the per-drawable value below).
     auto& layerUniforms = layerGroup.mutableUniformBuffers();
     const TerrainEvaluatedPropsUBO propsUBO = {
-        .exaggeration = exaggeration, .elevation_offset = elevationOffset, .pad1 = 0.0f, .pad2 = 0.0f};
+        .exaggeration = baseExaggeration, .elevation_offset = 0.0f, .pad1 = 0.0f, .pad2 = 0.0f};
     layerUniforms.createOrUpdate(idTerrainEvaluatedPropsUBO, &propsUBO, context);
 
 #if MLN_UBO_CONSOLIDATION
@@ -92,6 +77,9 @@ void TerrainLayerTweaker::execute(LayerGroupBase& layerGroup, const PaintParamet
         // This uses the same matrix calculation as other layers
         mat4 matrix = parameters.matrixForTile(tileID);
 
+        // letsgothru/terrain-3d: per-tile exaggeration using this tile's own zoom.
+        const float tileExaggeration = std::exp2(static_cast<float>(tileID.canonical.z)) * exagPerTileFactor;
+
 #if !MLN_UBO_CONSOLIDATION
         auto& drawableUniforms = drawable.mutableUniformBuffers();
 #endif
@@ -101,7 +89,11 @@ void TerrainLayerTweaker::execute(LayerGroupBase& layerGroup, const PaintParamet
 #else
         const TerrainDrawableUBO drawableUBO = {
 #endif
-            .matrix = util::cast<float>(matrix)
+            .matrix = util::cast<float>(matrix),
+            .exaggeration = tileExaggeration,
+            .pad0 = 0.0f,
+            .pad1 = 0.0f,
+            .pad2 = 0.0f,
         };
 
 #if !MLN_UBO_CONSOLIDATION
