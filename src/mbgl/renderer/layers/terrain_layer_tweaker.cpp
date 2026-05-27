@@ -91,9 +91,8 @@ void TerrainLayerTweaker::execute(LayerGroupBase& layerGroup, const PaintParamet
 #endif
             .matrix = util::cast<float>(matrix),
             .exaggeration = tileExaggeration,
-            .pad0 = 0.0f,
-            .pad1 = 0.0f,
-            .pad2 = 0.0f,
+            .dem_scale = 1.0f,            // Stage 1: identity (mesh tile == DEM tile)
+            .dem_tl = {0.0f, 0.0f},
         };
 
 #if !MLN_UBO_CONSOLIDATION

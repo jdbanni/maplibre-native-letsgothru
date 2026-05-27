@@ -19,9 +19,10 @@ enum {
 struct alignas(16) TerrainDrawableUBO {
     /*  0 */ float4x4 matrix;
     /* 64 */ float exaggeration; // letsgothru: per-tile (metres*style-exag*metersToTileUnits(tile.z))
-    /* 68 */ float pad0;
-    /* 72 */ float pad1;
-    /* 76 */ float pad2;
+    // letsgothru/terrain-3d: DEM uv transform (proxy tile -> covering DEM tile):
+    // uv = dem_tl + (pos/EXTENT) * dem_scale. Identity when mesh tile == DEM tile.
+    /* 68 */ float dem_scale;
+    /* 72 */ float2 dem_tl;
     /* 80 */
 };
 static_assert(sizeof(TerrainDrawableUBO) == 5 * 16, "wrong size");
@@ -66,7 +67,8 @@ struct VertexStage {
 
 struct FragmentStage {
     float4 position [[position, invariant]];
-    float2 uv;
+    float2 uv;    // DEM uv (into the covering DEM tile; transformed)
+    float2 mapUV; // letsgothru: drape uv (this tile's own RTT; pos/EXTENT)
     float elevation;
     float elevationMeters;
     float exaggeration; // letsgothru: per-tile, for the fragment hillshade zScale
@@ -81,10 +83,11 @@ FragmentStage vertex vertexMain(thread const VertexStage vertx [[stage_in]],
 
     device const TerrainDrawableUBO& drawable = drawableVector[uboIndex];
 
-    // Convert vertex position to normalized texture coordinates [0, 1]
-    // The mesh was generated with coordinates from 0 to EXTENT (8192)
+    // Vertex position in tile space [0, EXTENT]. The DEM uv maps this (proxy)
+    // tile into its covering DEM tile via the per-tile transform (identity when
+    // the mesh tile is the DEM tile).
     float2 pos = float2(vertx.pos);
-    float2 uv = pos / 8192.0;
+    float2 uv = drawable.dem_tl + (pos / 8192.0) * drawable.dem_scale;
 
     // Sample DEM texture to get raw RGBA values
     float4 demSample = demTexture.sample(demSampler, uv);
@@ -118,7 +121,8 @@ FragmentStage vertex vertexMain(thread const VertexStage vertx [[stage_in]],
 
     return {
         .position    = position,
-        .uv          = uv,
+        .uv          = uv,            // DEM uv (transformed into the covering DEM tile)
+        .mapUV       = pos / 8192.0,  // drape uv (this tile's own RTT)
         .elevation   = packedValue,  // Pass packed RGBA to detect any non-zero values
         .elevationMeters = elevationMeters,
         .exaggeration = drawable.exaggeration,
@@ -169,7 +173,7 @@ half4 fragment fragmentMain(FragmentStage in [[stage_in]],
     // draped fills are placed into the FBO by getTerrainRttPosMatrix with the
     // same orientation the mesh uses; the previous `1.0 - uv.y` sampled the
     // vertically-mirrored row, so the mesh read background instead of the fills.
-    float4 mapColor = mapTexture.sample(mapSampler, float2(in.uv.x, in.uv.y));
+    float4 mapColor = mapTexture.sample(mapSampler, in.mapUV);
 
     float3 base;
     if (mapColor.a > 0.01) {
