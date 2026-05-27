@@ -17,7 +17,9 @@ const std::array<AttributeInfo, 4> FillExtrusionShaderSource::attributes = {
     AttributeInfo{2, gfx::AttributeDataType::Float, fillExtrusionUBOCount + 1, idFillExtrusionBaseVertexAttribute},
     AttributeInfo{3, gfx::AttributeDataType::Float, fillExtrusionUBOCount + 1, idFillExtrusionHeightVertexAttribute},
 };
-const std::array<TextureInfo, 0> FillExtrusionShaderSource::textures = {};
+const std::array<TextureInfo, 1> FillExtrusionShaderSource::textures = {
+    TextureInfo{1, idFillExtrusionDEMTexture}, // letsgothru/terrain-3d
+};
 
 //
 // Fill extrusion instanced
@@ -37,7 +39,9 @@ const std::array<AttributeInfo, 5> FillExtrusionInstancedShaderSource::instanceA
     AttributeInfo{4, gfx::AttributeDataType::Float, fillExtrusionUBOCount + 2, idFillExtrusionBaseVertexAttribute},
     AttributeInfo{5, gfx::AttributeDataType::Float, fillExtrusionUBOCount + 2, idFillExtrusionHeightVertexAttribute},
 };
-const std::array<TextureInfo, 0> FillExtrusionInstancedShaderSource::textures = {};
+const std::array<TextureInfo, 1> FillExtrusionInstancedShaderSource::textures = {
+    TextureInfo{1, idFillExtrusionDEMTexture}, // letsgothru/terrain-3d
+};
 
 //
 // Fill extrusion pattern
@@ -55,8 +59,9 @@ const std::array<AttributeInfo, 5> FillExtrusionPatternShaderSource::attributes 
     AttributeInfo{
         4, gfx::AttributeDataType::UShort4, fillExtrusionUBOCount + 1, idFillExtrusionPatternToVertexAttribute},
 };
-const std::array<TextureInfo, 1> FillExtrusionPatternShaderSource::textures = {
+const std::array<TextureInfo, 2> FillExtrusionPatternShaderSource::textures = {
     TextureInfo{0, idFillExtrusionImageTexture},
+    TextureInfo{1, idFillExtrusionDEMTexture}, // letsgothru/terrain-3d
 };
 
 //
@@ -80,8 +85,9 @@ const std::array<AttributeInfo, 6> FillExtrusionPatternInstancedShaderSource::in
     AttributeInfo{
         6, gfx::AttributeDataType::UShort4, fillExtrusionUBOCount + 2, idFillExtrusionPatternToVertexAttribute},
 };
-const std::array<TextureInfo, 1> FillExtrusionPatternInstancedShaderSource::textures = {
+const std::array<TextureInfo, 2> FillExtrusionPatternInstancedShaderSource::textures = {
     TextureInfo{0, idFillExtrusionImageTexture},
+    TextureInfo{1, idFillExtrusionDEMTexture}, // letsgothru/terrain-3d
 };
 
 } // namespace shaders

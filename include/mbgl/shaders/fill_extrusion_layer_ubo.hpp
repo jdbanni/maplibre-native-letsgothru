@@ -20,10 +20,17 @@ struct alignas(16) FillExtrusionDrawableUBO {
     /*  96 */ float color_t;
     /* 100 */ float pattern_from_t;
     /* 104 */ float pattern_to_t;
-    /* 108 */ float pad1;
-    /* 112 */
+
+    // letsgothru/terrain-3d: per-anchor DEM elevation (see symbol_layer_ubo.hpp).
+    // has_terrain != 0 -> sample DEM at dem_tl + (pos/EXTENT)*dem_scale, decode
+    // Terrarium metres, * meters_to_tile_x_exag -> tile units added to base+top z.
+    /* 108 */ /*bool*/ int has_terrain;
+    /* 112 */ float meters_to_tile_x_exag;
+    /* 116 */ float dem_scale;
+    /* 120 */ std::array<float, 2> dem_tl;
+    /* 128 */
 };
-static_assert(sizeof(FillExtrusionDrawableUBO) == 7 * 16);
+static_assert(sizeof(FillExtrusionDrawableUBO) == 8 * 16);
 
 struct alignas(16) FillExtrusionTilePropsUBO {
     /*  0 */ std::array<float, 4> pattern_from;

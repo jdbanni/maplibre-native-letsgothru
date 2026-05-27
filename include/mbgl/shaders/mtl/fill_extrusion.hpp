@@ -29,10 +29,17 @@ struct alignas(16) FillExtrusionDrawableUBO {
     /*  96 */ float color_t;
     /* 100 */ float pattern_from_t;
     /* 104 */ float pattern_to_t;
-    /* 108 */ float pad1;
-    /* 112 */
+
+    // letsgothru/terrain-3d: per-anchor DEM elevation. has_terrain != 0 -> sample
+    // DEM at dem_tl + (pos/EXTENT)*dem_scale, decode Terrarium metres,
+    // * meters_to_tile_x_exag -> tile units added to base+top z (sits on terrain).
+    /* 108 */ /*bool*/ int has_terrain;
+    /* 112 */ float meters_to_tile_x_exag;
+    /* 116 */ float dem_scale;
+    /* 120 */ float2 dem_tl;
+    /* 128 */
 };
-static_assert(sizeof(FillExtrusionDrawableUBO) == 7 * 16, "wrong size");
+static_assert(sizeof(FillExtrusionDrawableUBO) == 8 * 16, "wrong size");
 
 struct alignas(16) FillExtrusionTilePropsUBO {
     /*  0 */ float4 pattern_from;
@@ -71,7 +78,7 @@ struct ShaderSource<BuiltIn::FillExtrusionShader, gfx::Backend::Type::Metal> {
 
     static const std::array<AttributeInfo, 4> attributes;
     static constexpr std::array<AttributeInfo, 0> instanceAttributes{};
-    static const std::array<TextureInfo, 0> textures;
+    static const std::array<TextureInfo, 1> textures;
 
     static constexpr auto prelude = fillExtrusionShaderPrelude;
     static constexpr auto source = R"(
@@ -103,7 +110,9 @@ struct FragmentOutput {
 FragmentStage vertex vertexMain(thread const VertexStage vertx [[stage_in]],
                                 device const uint32_t& uboIndex [[buffer(idGlobalUBOIndex)]],
                                 device const FillExtrusionDrawableUBO* drawableVector [[buffer(idFillExtrusionDrawableUBO)]],
-                                device const FillExtrusionPropsUBO& props [[buffer(idFillExtrusionPropsUBO)]]) {
+                                device const FillExtrusionPropsUBO& props [[buffer(idFillExtrusionPropsUBO)]],
+                                texture2d<float, access::sample> dem_image [[texture(1)]],
+                                sampler dem_sampler [[sampler(1)]]) {
 
     device const FillExtrusionDrawableUBO& drawable = drawableVector[uboIndex];
 
@@ -120,7 +129,13 @@ FragmentStage vertex vertexMain(thread const VertexStage vertx [[stage_in]],
 
     const float3 normal = float3(0.0, 0.0, 1.0);
     const float t = 1.0;
-    const float z = (t != 0.0) ? height : base;     // TODO: This would come out wrong on GL for negative values, check it...
+    float z = (t != 0.0) ? height : base;
+    // letsgothru/terrain-3d: lift the building onto the DEM surface (per-anchor).
+    if (drawable.has_terrain != 0) {
+        const float2 demUV = drawable.dem_tl + (float2(vertx.pos) / 8192.0) * drawable.dem_scale;
+        const float4 ds = dem_image.sample(dem_sampler, demUV);
+        z += ((ds.r * 255.0 * 256.0 + ds.g * 255.0 + ds.b * 255.0 / 256.0) - 32768.0) * drawable.meters_to_tile_x_exag;
+    }
     const float4 position = drawable.matrix * float4(float2(vertx.pos), z, 1);
 
 #if defined(OVERDRAW_INSPECTOR)
@@ -191,7 +206,7 @@ struct ShaderSource<BuiltIn::FillExtrusionInstancedShader, gfx::Backend::Type::M
 
     static const std::array<AttributeInfo, 1> attributes;
     static const std::array<AttributeInfo, 5> instanceAttributes;
-    static const std::array<TextureInfo, 0> textures;
+    static const std::array<TextureInfo, 1> textures;
 
     static constexpr auto prelude = fillExtrusionShaderPrelude;
     static constexpr auto source = R"(
@@ -230,7 +245,9 @@ FragmentStage vertex vertexMain(thread const VertexStage vertx [[stage_in]],
                                 device const FillExtrusionDrawableUBO* drawableVector [[buffer(idFillExtrusionDrawableUBO)]],
                                 device const FillExtrusionPropsUBO& props [[buffer(idFillExtrusionPropsUBO)]],
                                 uint instanceID [[ instance_id ]],
-                                device const OutlineInstance* outline [[buffer(fillExtrusionUBOCount + 1)]]) {
+                                device const OutlineInstance* outline [[buffer(fillExtrusionUBOCount + 1)]],
+                                texture2d<float, access::sample> dem_image [[texture(1)]],
+                                sampler dem_sampler [[sampler(1)]]) {
 
     if (outline[instanceID].ed_discard.y) {
         return {
@@ -262,7 +279,14 @@ FragmentStage vertex vertexMain(thread const VertexStage vertx [[stage_in]],
 
     const float3 normal = float3(-perp.y, perp.x, 0.0);
     const float t = float(vertx.pos.y);
-    const float z = (t != 0.0) ? height : base;     // TODO: This would come out wrong on GL for negative values, check it...
+    float z = (t != 0.0) ? height : base;
+    // letsgothru/terrain-3d: lift the building onto the DEM surface (per-anchor).
+    if (drawable.has_terrain != 0) {
+        const float2 demXY = float2(outline[instanceID + vertx.pos.x].pos);
+        const float2 demUV = drawable.dem_tl + (demXY / 8192.0) * drawable.dem_scale;
+        const float4 ds = dem_image.sample(dem_sampler, demUV);
+        z += ((ds.r * 255.0 * 256.0 + ds.g * 255.0 + ds.b * 255.0 / 256.0) - 32768.0) * drawable.meters_to_tile_x_exag;
+    }
     const float4 position = drawable.matrix * float4(float2(outline[instanceID + vertx.pos.x].pos), z, 1);
 
 #if defined(OVERDRAW_INSPECTOR)
@@ -333,7 +357,7 @@ struct ShaderSource<BuiltIn::FillExtrusionPatternShader, gfx::Backend::Type::Met
 
     static const std::array<AttributeInfo, 5> attributes;
     static constexpr std::array<AttributeInfo, 0> instanceAttributes{};
-    static const std::array<TextureInfo, 1> textures;
+    static const std::array<TextureInfo, 2> textures;
 
     static constexpr auto prelude = fillExtrusionShaderPrelude;
     static constexpr auto source = R"(
@@ -379,7 +403,9 @@ FragmentStage vertex vertexMain(thread const VertexStage vertx [[stage_in]],
                                 device const uint32_t& uboIndex [[buffer(idGlobalUBOIndex)]],
                                 device const FillExtrusionDrawableUBO* drawableVector [[buffer(idFillExtrusionDrawableUBO)]],
                                 device const FillExtrusionTilePropsUBO* tilePropsVector [[buffer(idFillExtrusionTilePropsUBO)]],
-                                device const FillExtrusionPropsUBO& props [[buffer(idFillExtrusionPropsUBO)]]) {
+                                device const FillExtrusionPropsUBO& props [[buffer(idFillExtrusionPropsUBO)]],
+                                texture2d<float, access::sample> dem_image [[texture(1)]],
+                                sampler dem_sampler [[sampler(1)]]) {
 
     device const FillExtrusionDrawableUBO& drawable = drawableVector[uboIndex];
     device const FillExtrusionTilePropsUBO& tileProps = tilePropsVector[uboIndex];
@@ -397,7 +423,13 @@ FragmentStage vertex vertexMain(thread const VertexStage vertx [[stage_in]],
 
     const float3 normal = float3(0.0, 0.0, 1.0);
     const float t = 1.0;
-    const float z = (t != 0.0) ? height : base;     // TODO: This would come out wrong on GL for negative values, check it...
+    float z = (t != 0.0) ? height : base;
+    // letsgothru/terrain-3d: lift the building onto the DEM surface (per-anchor).
+    if (drawable.has_terrain != 0) {
+        const float2 demUV = drawable.dem_tl + (float2(vertx.pos) / 8192.0) * drawable.dem_scale;
+        const float4 ds = dem_image.sample(dem_sampler, demUV);
+        z += ((ds.r * 255.0 * 256.0 + ds.g * 255.0 + ds.b * 255.0 / 256.0) - 32768.0) * drawable.meters_to_tile_x_exag;
+    }
     const float4 position = drawable.matrix * float4(float2(vertx.pos), z, 1);
 
 #if defined(OVERDRAW_INSPECTOR)
@@ -515,7 +547,7 @@ struct ShaderSource<BuiltIn::FillExtrusionPatternInstancedShader, gfx::Backend::
 
     static const std::array<AttributeInfo, 1> attributes;
     static const std::array<AttributeInfo, 6> instanceAttributes;
-    static const std::array<TextureInfo, 1> textures;
+    static const std::array<TextureInfo, 2> textures;
 
     static constexpr auto prelude = fillExtrusionShaderPrelude;
     static constexpr auto source = R"(
@@ -568,7 +600,9 @@ FragmentStage vertex vertexMain(thread const VertexStage vertx [[stage_in]],
                                 device const FillExtrusionTilePropsUBO* tilePropsVector [[buffer(idFillExtrusionTilePropsUBO)]],
                                 device const FillExtrusionPropsUBO& props [[buffer(idFillExtrusionPropsUBO)]],
                                 uint instanceID [[ instance_id ]],
-                                device const OutlineInstance* outline [[buffer(fillExtrusionUBOCount + 1)]]) {
+                                device const OutlineInstance* outline [[buffer(fillExtrusionUBOCount + 1)]],
+                                texture2d<float, access::sample> dem_image [[texture(1)]],
+                                sampler dem_sampler [[sampler(1)]]) {
 
     if (outline[instanceID].ed_discard.y) {
         return {
@@ -611,7 +645,14 @@ FragmentStage vertex vertexMain(thread const VertexStage vertx [[stage_in]],
     const float3 normal = float3(-perp.y, perp.x, 0.0);
     const float edgedistance = outline[instanceID + 1 - vertx.pos.x].ed_discard.x;
     const float t = float(vertx.pos.y);
-    const float z = (t != 0.0) ? height : base;     // TODO: This would come out wrong on GL for negative values, check it...
+    float z = (t != 0.0) ? height : base;
+    // letsgothru/terrain-3d: lift the building onto the DEM surface (per-anchor).
+    if (drawable.has_terrain != 0) {
+        const float2 demXY = float2(outline[instanceID + vertx.pos.x].pos);
+        const float2 demUV = drawable.dem_tl + (demXY / 8192.0) * drawable.dem_scale;
+        const float4 ds = dem_image.sample(dem_sampler, demUV);
+        z += ((ds.r * 255.0 * 256.0 + ds.g * 255.0 + ds.b * 255.0 / 256.0) - 32768.0) * drawable.meters_to_tile_x_exag;
+    }
     const float4 position = drawable.matrix * float4(float2(outline[instanceID + vertx.pos.x].pos), z, 1);
 
 #if defined(OVERDRAW_INSPECTOR)

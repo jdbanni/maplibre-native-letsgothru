@@ -10,7 +10,10 @@
 #include <mbgl/renderer/render_tree.hpp>
 #include <mbgl/renderer/paint_parameters.hpp>
 #include <mbgl/renderer/paint_property_binder.hpp>
+#include <mbgl/renderer/render_terrain.hpp>
 #include <mbgl/shaders/fill_extrusion_layer_ubo.hpp>
+#include <mbgl/shaders/shader_defines.hpp>
+#include <cmath>
 #include <mbgl/shaders/shader_program_base.hpp>
 #include <mbgl/style/layers/fill_extrusion_layer_properties.hpp>
 
@@ -64,6 +67,19 @@ void FillExtrusionLayerTweaker::execute(LayerGroupBase& layerGroup, const PaintP
     const auto defPattern = mbgl::Faded<expression::Image>{.from = "", .to = ""};
     const auto fillPatternValue = evaluated.get<FillExtrusionPattern>().constantOr(defPattern);
 
+    // letsgothru/terrain-3d: lift building bases onto the DEM surface. The shader
+    // samples the bound DEM and converts metres to tile units with this factor
+    // (excludes the 2^z term, applied per-drawable from the tile's canonical zoom,
+    // matching TerrainLayerTweaker so buildings sit on the mesh).
+    float metersToTileUnitsFactor = 0.0f;
+    if (parameters.terrain) {
+        constexpr float EXTENT_F = 8192.0f;
+        constexpr float EARTH_CIRCUMFERENCE_M = 40075016.686f;
+        const float latRad = static_cast<float>(state.getLatLng().latitude() * M_PI / 180.0);
+        const float cosLat = std::max(0.05f, std::cos(latRad));
+        metersToTileUnitsFactor = EXTENT_F / (cosLat * EARTH_CIRCUMFERENCE_M) * parameters.terrain->getExaggeration();
+    }
+
 #if MLN_UBO_CONSOLIDATION
     int i = 0;
     std::vector<FillExtrusionDrawableUBO> drawableUBOVector(layerGroup.getDrawableCount());
@@ -100,6 +116,18 @@ void FillExtrusionLayerTweaker::execute(LayerGroupBase& layerGroup, const PaintP
         const auto numTiles = std::pow(2, tileID.canonical.z);
         const auto heightFactor = static_cast<float>(-numTiles / util::tileSize_D / 8.0);
 
+        // letsgothru/terrain-3d: bind the covering DEM so the shader lifts the
+        // building base onto the surface. has_terrain stays 0 if none covers it.
+        std::optional<RenderTerrain::DEMTextureRef> demRef;
+        float metersToTileUnitsXExag = 0.0f;
+        if (parameters.terrain && !std::getenv("MLN_NO_EXTRUSION_ELEVATION")) {
+            demRef = parameters.terrain->getDEMTextureFor(tileID);
+            if (demRef) {
+                drawable.setTexture(demRef->texture, idFillExtrusionDEMTexture);
+                metersToTileUnitsXExag = std::exp2(static_cast<float>(tileID.canonical.z)) * metersToTileUnitsFactor;
+            }
+        }
+
         Size textureSize = {0, 0};
         if (const auto& tex = drawable.getTexture(idFillExtrusionImageTexture)) {
             textureSize = tex->getSize();
@@ -128,7 +156,10 @@ void FillExtrusionLayerTweaker::execute(LayerGroupBase& layerGroup, const PaintP
             .color_t = std::get<0>(binders->get<FillExtrusionColor>()->interpolationFactor(zoom)),
             .pattern_from_t = std::get<0>(binders->get<FillExtrusionPattern>()->interpolationFactor(zoom)),
             .pattern_to_t = std::get<0>(binders->get<FillExtrusionPattern>()->interpolationFactor(zoom)),
-            .pad1 = 0
+            .has_terrain = demRef ? 1 : 0,
+            .meters_to_tile_x_exag = metersToTileUnitsXExag,
+            .dem_scale = demRef ? demRef->demScale : 1.0f,
+            .dem_tl = demRef ? std::array<float, 2>{demRef->demTlX, demRef->demTlY} : std::array<float, 2>{0.0f, 0.0f},
         };
 
 #if MLN_UBO_CONSOLIDATION

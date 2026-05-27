@@ -308,6 +308,7 @@ enum {
 
 enum {
     idFillExtrusionImageTexture,
+    idFillExtrusionDEMTexture, // letsgothru/terrain-3d: DEM for building-base elevation
     fillExtrusionTextureCount
 };
 
