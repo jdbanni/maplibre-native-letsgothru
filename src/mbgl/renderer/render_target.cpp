@@ -45,6 +45,12 @@ const gfx::Texture2DPtr& RenderTarget::getTexture() {
     return offscreenTexture->getTexture();
 };
 
+void RenderTarget::setNoWaitOnSwap(bool value) {
+    if (offscreenTexture) {
+        offscreenTexture->getResource<gfx::RenderableResource>().setNoWaitOnSwap(value);
+    }
+}
+
 bool RenderTarget::addLayerGroup(LayerGroupBasePtr layerGroup, const bool replace) {
     const auto index = layerGroup->getLayerIndex();
     const auto result = layerGroupsByLayerIndex.insert(std::make_pair(index, LayerGroupBasePtr{}));

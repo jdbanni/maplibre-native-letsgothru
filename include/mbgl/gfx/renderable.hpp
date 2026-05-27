@@ -18,6 +18,14 @@ public:
     RenderableResource& operator=(const RenderableResource&) = delete;
 
     virtual void bind() = 0;
+
+    // letsgothru/terrain-3d: for intermediate render targets (terrain drape RTTs)
+    // sampled only on-GPU by a later pass in the same frame, the command queue
+    // already orders this before that pass, so the per-swap CPU waitUntilCompleted
+    // is pure stall (one per visible tile). Set true to skip it. Targets read back
+    // to the CPU (headless readStillImage) must keep waiting. Default no-op; only
+    // backends with such a stall (Metal) honour it.
+    virtual void setNoWaitOnSwap(bool) {}
 };
 
 class Renderable {

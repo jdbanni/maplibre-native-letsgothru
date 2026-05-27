@@ -28,6 +28,10 @@ void TexturePool::createRenderTarget(gfx::Context& context, const UnwrappedTileI
     // letsgothru/terrain-3d render-in-place: remember which terrain tile this FBO
     // drapes, so RenderTarget::render can set the per-tile RTT matrix context.
     renderTarget->setTerrainTileID(id);
+    // letsgothru/terrain-3d: terrain drapes are sampled on-GPU by the terrain mesh
+    // later this frame and never read back to CPU, so skip the per-swap GPU stall
+    // (one per visible tile -- the main cost when zoomed out).
+    renderTarget->setNoWaitOnSwap(true);
     renderTargets[id] = std::move(renderTarget);
 }
 

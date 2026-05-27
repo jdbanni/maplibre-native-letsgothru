@@ -83,10 +83,18 @@ public:
         }
     }
 
+    void setNoWaitOnSwap(bool value) override { noWaitOnSwap = value; }
+
     void swap() override {
         assert(commandBuffer);
         commandBuffer->commit();
-        commandBuffer->waitUntilCompleted();
+        // letsgothru/terrain-3d: terrain drape RTTs are sampled on-GPU by the
+        // terrain mesh later this frame; the queue orders this commit before that
+        // pass, so the CPU wait is unnecessary (and costs one stall per tile). CPU
+        // readback paths (headless) leave noWaitOnSwap false and still wait here.
+        if (!noWaitOnSwap) {
+            commandBuffer->waitUntilCompleted();
+        }
         commandBuffer.reset();
         renderPassDescriptor.reset();
     }
@@ -130,6 +138,7 @@ private:
     gfx::Texture2DPtr stencilTexture;
     MTLCommandBufferPtr commandBuffer;
     MTLRenderPassDescriptorPtr renderPassDescriptor;
+    bool noWaitOnSwap = false; // letsgothru/terrain-3d: see setNoWaitOnSwap
 };
 
 OffscreenTexture::OffscreenTexture(

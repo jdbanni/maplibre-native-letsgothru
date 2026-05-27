@@ -96,6 +96,11 @@ public:
     /// letsgothru/terrain-3d render-in-place: the terrain tile this FBO drapes.
     void setTerrainTileID(const UnwrappedTileID& id) { terrainTileID = id; }
 
+    /// letsgothru/terrain-3d: skip the per-swap CPU GPU-sync for this RTT. Safe for
+    /// terrain drapes (sampled on-GPU later this frame via queue ordering, never
+    /// read back to CPU); removes one stall per visible tile.
+    void setNoWaitOnSwap(bool);
+
     /// letsgothru/terrain-3d: per-frame content fingerprint for dirty-tracking.
     /// The draped content is camera-independent, so an unchanged fingerprint
     /// means the FBO can be reused (skip re-render + the per-RTT GPU sync).
